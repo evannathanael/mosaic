@@ -1,12 +1,27 @@
-"""Train a frozen-CLIP + MLP-head AI-image detector on CIFAKE, then report
-accuracy on clean test images AND on each robustness perturbation separately.
+"""Train a frozen-CLIP + MLP-head AI-image detector on CIFAKE or SID-Set, then
+report accuracy on clean test images AND on each robustness perturbation
+separately.
+
+Which dataset trains/evaluates is a single switch — DATASET below — so you
+can flip between them without touching anything downstream:
+    - "cifake":  torchvision.datasets.ImageFolder over data/raw/CIFAKE/{train,test}
+    - "sid_set": reads Vicky's cleaned manifest (data/processed/sid_set) and
+      fetches image bytes on demand from the Parquet shards it references
+      (data/raw/sid_set) — see SidSetParquetDataset below. SID-Set has 3
+      source labels (0=real, 1=full synthetic, 2=tampered); this loader keeps
+      0->0 and 1->1 and drops 2 entirely, applying that binary policy itself
+      since Vicky's cleaner deliberately does not (confirmed in its docstring
+      and data/README.md — see sid_set_label_policy()).
+Both loaders produce the exact same (image, binary_label) shape per item, so
+everything past dataset construction — the frozen backbone, the embedding
+cache, the MLP head, robustness eval, and checkpointing — is 100% shared code.
 
 Pipeline:
-    1. Load CIFAKE train/ and test/ with torchvision.datasets.ImageFolder
-       (each has REAL/ and FAKE/ subfolders).
-    2. Wrap the labels so 0 = real, 1 = AI ("fake") — ImageFolder assigns
-       indices alphabetically (FAKE=0, REAL=1), which is the OPPOSITE of the
-       convention this project uses, so BinaryCifakeFolder remaps it.
+    1. Load the selected dataset (see DATASET switch above).
+    2. Labels are 0 = real, 1 = AI ("fake") for both datasets. CIFAKE's
+       ImageFolder assigns indices alphabetically (FAKE=0, REAL=1) — the
+       OPPOSITE of this project's convention — so BinaryCifakeFolder remaps
+       it; SID-Set's remap is the label policy described above.
     3. Build the model: frozen open_clip ViT-L/14 backbone (`AIGCClipDetector`
        in clip_aigc_head.py) + a small trainable MLP head.
     4. EMBED ONCE, then train the head on cached embeddings (the perf fix):
@@ -44,12 +59,14 @@ Usage:
 """
 from __future__ import annotations
 
+import csv
 import io
 import random
 import time
 from pathlib import Path
 
 import pandas as pd
+import pyarrow.parquet as pq
 import torch
 import torch.nn as nn
 from PIL import Image, ImageFilter
@@ -57,14 +74,16 @@ from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
 
-from src.models.clip_aigc_head import AIGCClipDetector
+from src.models.clip_aigc_head import AIGCClipDetector, MlpHead
 
 # =====================================================================
 # CONFIG — edit these first. Shrink the *_SUBSET values for fast CPU runs;
 # set them to None to use the full dataset once you scale up (e.g. on Colab).
 # =====================================================================
-TRAIN_SUBSET = 200   # images PER CLASS from data/raw/CIFAKE/train (None = all)
-VAL_SUBSET = 200      # images PER CLASS from data/raw/CIFAKE/test, used for eval/the table (None = all)
+DATASET = "cifake"  # "cifake" or "sid_set" — flip this to switch datasets; also names outputs/{DATASET}_*
+
+TRAIN_SUBSET = 200   # images PER CLASS from the selected dataset's train split (None = all)
+VAL_SUBSET = 200      # images PER CLASS from the selected dataset's eval split, used for the table (None = all)
 
 # CIFAKE lives at data/raw/CIFAKE/{train,test}/{REAL,FAKE} in this repo (see
 # data/README.md) — not ./data/train and ./data/test. Point this at wherever
@@ -73,6 +92,22 @@ VAL_SUBSET = 200      # images PER CLASS from data/raw/CIFAKE/test, used for eva
 DATA_ROOT = Path("data/raw/CIFAKE")
 TRAIN_DIR = DATA_ROOT / "train"
 TEST_DIR = DATA_ROOT / "test"
+
+# SID-Set: Vicky's cleaner (src/data/clean_sid_set.py) writes a row-level
+# manifest here, referencing each image by (parquet_file, row_index) rather
+# than copying it out of Parquet — SID_SET_MANIFEST_DIR/clean_manifest.csv is
+# what SidSetParquetDataset reads. SID_SET_RAW_ROOT is where the actual
+# Parquet shards live: src/data/download.py's snapshot_download() places the
+# HF repo at data/raw/sid_set, and HF dataset repos for SID-Set nest their
+# shards under a data/ subfolder inside that (matching the manifest's
+# recorded paths, e.g. "data/train-00000-of-00249.parquet") — so this should
+# resolve correctly once you've actually run download.py. (Note: Vicky's own
+# cleaning run used a differently-named local folder, sid_set_hf, per
+# data/processed/sid_set/cleaning_report.json — that only affected where SHE
+# ran the cleaner from, not the root-relative paths recorded in the manifest.)
+SID_SET_RAW_ROOT = Path("data/raw/sid_set")
+SID_SET_MANIFEST_DIR = Path("data/processed/sid_set")
+SID_SET_SPLITS = {"train": "train", "eval": "validation"}  # SID-Set's eval split is named "validation", not "test"
 
 CLIP_MODEL_NAME = "ViT-L-14"
 CLIP_PRETRAINED = "openai"   # first run downloads + caches weights (~890MB) via open_clip/HF hub
@@ -101,7 +136,8 @@ NUM_WORKERS = 4 if DEVICE == "cuda" else 0
 PROGRESS_EVERY = 1000  # print embedding progress every N images (full-scale runs only)
 
 OUTPUT_DIR = Path("outputs")
-TABLE_PATH = OUTPUT_DIR / "cifake_clip_robustness_table.csv"
+TABLE_PATH = OUTPUT_DIR / f"{DATASET}_clip_robustness_table.csv"
+HEAD_CHECKPOINT_PATH = OUTPUT_DIR / f"{DATASET}_head.pt"
 
 # --- robustness perturbation severities (used for both train-time random
 # augmentation and the fixed eval perturbations below) ---
@@ -170,6 +206,126 @@ def stratified_indices(dataset: BinaryCifakeFolder, per_class: int | None, seed:
         indices.extend(idxs[:per_class])
     rng.shuffle(indices)
     return indices
+
+
+# =====================================================================
+# Step 1-2 (alt): SID-Set — Parquet-backed dataset, dataset-agnostic downstream
+# =====================================================================
+def sid_set_label_policy(source_label: int) -> int | None:
+    """0=real -> 0, 1=full synthetic -> 1, 2=tampered -> None (excluded).
+
+    Vicky's cleaner (src/data/clean_sid_set.py) explicitly does NOT apply a
+    binary policy — its docstring says so verbatim ("No binary training-label
+    policy is applied here"), and data/README.md confirms it's left as an
+    intentional later step: "The binary mapping for model training is
+    intentionally a later step." So clean_manifest.csv still carries the
+    original 3-way source_label, and this is the one place the binary policy
+    gets applied — do not re-apply it upstream in the cleaner.
+    """
+    if source_label in (0, 1):
+        return source_label
+    return None  # tampered — excluded entirely for now
+
+
+def _extract_image_bytes(image_value) -> bytes:
+    """Pull raw bytes out of a Parquet image struct value — mirrors
+    src/data/clean_sid_set.py's `_image_bytes` helper (kept local, not
+    imported, so this script stays one portable file).
+    """
+    if isinstance(image_value, dict):
+        raw = image_value.get("bytes")
+        if raw is None:
+            raise ValueError("image.bytes is missing (row references an external file, not embedded bytes)")
+        return raw
+    if isinstance(image_value, (bytes, bytearray)):
+        return bytes(image_value)
+    raise ValueError(f"Unexpected image column value type: {type(image_value)}")
+
+
+class SidSetParquetDataset(torch.utils.data.Dataset):
+    """Reads SID-Set images referenced by Vicky's cleaned manifest, fetching
+    image bytes on demand from the Parquet shards under `raw_root` — the
+    manifest stores (parquet_file, row_index), not copies of the images.
+
+    Duck-types the same interface BinaryCifakeFolder exposes — `.samples`
+    (list of (identifier, binary_label)), a mutable `.transform`, and
+    `__getitem__` -> (image, binary_label) — so stratified_indices() and
+    embed_indices() work on it completely unchanged.
+    """
+
+    def __init__(self, manifest_path: Path, raw_root: Path, split: str, transform=None):
+        self.raw_root = Path(raw_root)
+        self.transform = transform
+        self.samples: list[tuple[tuple[str, int], int]] = []
+
+        with open(manifest_path, newline="", encoding="utf-8") as stream:
+            for row in csv.DictReader(stream):
+                if row["split"] != split:
+                    continue
+                binary_label = sid_set_label_policy(int(row["source_label"]))
+                if binary_label is None:
+                    continue  # tampered (2) — excluded per the label policy above
+                self.samples.append(((row["parquet_file"], int(row["row_index"])), binary_label))
+
+        if not self.samples:
+            raise ValueError(
+                f"No usable rows for split={split!r} in {manifest_path} after the label policy — "
+                f"check the manifest exists (run src/data/clean_sid_set.py) and that split name is right."
+            )
+
+        # parquet_file -> list of raw image-column values, loaded lazily and
+        # cached per shard. On CUDA/Colab, DataLoader workers each get their
+        # own copy of this dataset (spawned, not forked, on most platforms),
+        # so each worker builds its own cache independently — a little
+        # redundant I/O across workers, but no correctness issue.
+        self._shard_cache: dict[str, list] = {}
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def _shard_images(self, parquet_file: str) -> list:
+        if parquet_file not in self._shard_cache:
+            table = pq.read_table(self.raw_root / parquet_file, columns=["image"])
+            self._shard_cache[parquet_file] = table.column("image").to_pylist()
+        return self._shard_cache[parquet_file]
+
+    def __getitem__(self, index: int):
+        (parquet_file, row_index), label = self.samples[index]
+        raw = _extract_image_bytes(self._shard_images(parquet_file)[row_index])
+        image = Image.open(io.BytesIO(raw)).convert("RGB")
+        if self.transform is not None:
+            image = self.transform(image)
+        return image, label
+
+
+# =====================================================================
+# Dataset builders — the ONLY thing the DATASET switch changes. Everything
+# past this point (embed_indices, train_head, evaluate_head, checkpointing)
+# only ever sees (dataset, indices) and doesn't know or care which dataset
+# produced them.
+# =====================================================================
+def build_cifake_datasets():
+    train_base = BinaryCifakeFolder(str(TRAIN_DIR), transform=None)
+    train_indices = stratified_indices(train_base, TRAIN_SUBSET, seed=SEED)
+    eval_base = BinaryCifakeFolder(str(TEST_DIR), transform=None)
+    eval_indices = stratified_indices(eval_base, VAL_SUBSET, seed=SEED)
+    print(f"Train samples: {len(train_indices)} (from {TRAIN_DIR})")
+    print(f"Eval samples: {len(eval_indices)} (from {TEST_DIR})")
+    return train_base, train_indices, eval_base, eval_indices
+
+
+def build_sid_set_datasets():
+    manifest_path = SID_SET_MANIFEST_DIR / "clean_manifest.csv"
+    train_base = SidSetParquetDataset(manifest_path, SID_SET_RAW_ROOT, split=SID_SET_SPLITS["train"], transform=None)
+    train_indices = stratified_indices(train_base, TRAIN_SUBSET, seed=SEED)
+    eval_base = SidSetParquetDataset(manifest_path, SID_SET_RAW_ROOT, split=SID_SET_SPLITS["eval"], transform=None)
+    eval_indices = stratified_indices(eval_base, VAL_SUBSET, seed=SEED)
+    print(f"Train samples: {len(train_indices)} (from {manifest_path}, split={SID_SET_SPLITS['train']!r})")
+    print(f"Eval samples: {len(eval_indices)} (from {manifest_path}, split={SID_SET_SPLITS['eval']!r})")
+    return train_base, train_indices, eval_base, eval_indices
+
+
+DATASET_BUILDERS = {"cifake": build_cifake_datasets, "sid_set": build_sid_set_datasets}
 
 
 # =====================================================================
@@ -327,6 +483,57 @@ def evaluate_head(model: AIGCClipDetector, features: torch.Tensor, labels: torch
     return (preds == labels).float().mean().item()
 
 
+# =====================================================================
+# Checkpointing — save/load ONLY the trained head. The frozen CLIP backbone
+# is never saved here: it's pretrained, unmodified, and cheaply re-obtained
+# from (CLIP_MODEL_NAME, CLIP_PRETRAINED) via open_clip's own cache, so
+# re-saving ~890MB of unchanged weights on every run would be pure waste.
+# =====================================================================
+def save_head_checkpoint(model: AIGCClipDetector, path: Path) -> None:
+    """Save the trained head's weights + the config needed to reconstruct it
+    (embed_dim/hidden_dim/dropout, and which CLIP backbone it was trained
+    against), so a fresh process can reload it without retraining.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "head_state_dict": model.head.state_dict(),
+            "embed_dim": model.embed_dim,
+            "hidden_dim": HEAD_HIDDEN_DIM,
+            "dropout": HEAD_DROPOUT,
+            "clip_model_name": CLIP_MODEL_NAME,
+            "clip_pretrained": CLIP_PRETRAINED,
+        },
+        path,
+    )
+    print(f"Saved head checkpoint to {path}")
+
+
+def load_head_checkpoint(path: Path, device: str = DEVICE) -> tuple[MlpHead, dict]:
+    """Load a saved head checkpoint for inference/evaluation.
+
+    Returns (head, metadata) — metadata records which CLIP backbone this head
+    was trained against (clip_model_name/clip_pretrained/embed_dim), so a
+    caller can check it matches the backbone they pair it with. Usage:
+
+        head, meta = load_head_checkpoint(Path("outputs/cifake_head.pt"))
+        model = AIGCClipDetector(meta["clip_model_name"], meta["clip_pretrained"],
+                                  meta["hidden_dim"], meta["dropout"])
+        model.head.load_state_dict(head.state_dict())
+    """
+    checkpoint = torch.load(path, map_location=device)
+    head = MlpHead(
+        embed_dim=checkpoint["embed_dim"],
+        hidden_dim=checkpoint["hidden_dim"],
+        dropout=checkpoint["dropout"],
+    )
+    head.load_state_dict(checkpoint["head_state_dict"])
+    head.to(device)
+    head.eval()
+    metadata = {k: v for k, v in checkpoint.items() if k != "head_state_dict"}
+    return head, metadata
+
+
 def main() -> None:
     set_seed(SEED)
     print(f"Device: {DEVICE}")
@@ -344,13 +551,10 @@ def main() -> None:
     clip_preprocess = model.clip_preprocess
 
     # --- Step 1-2: datasets (transform set per-embedding-pass below) ---
-    train_base = BinaryCifakeFolder(str(TRAIN_DIR), transform=None)
-    train_indices = stratified_indices(train_base, TRAIN_SUBSET, seed=SEED)
-    print(f"Train samples: {len(train_indices)} (from {TRAIN_DIR})")
-
-    test_base = BinaryCifakeFolder(str(TEST_DIR), transform=None)
-    eval_indices = stratified_indices(test_base, VAL_SUBSET, seed=SEED)
-    print(f"Eval samples: {len(eval_indices)} (from {TEST_DIR})")
+    if DATASET not in DATASET_BUILDERS:
+        raise ValueError(f"Unknown DATASET {DATASET!r}. Choose one of {list(DATASET_BUILDERS)}.")
+    print(f"Dataset: {DATASET}")
+    train_base, train_indices, test_base, eval_indices = DATASET_BUILDERS[DATASET]()
 
     # --- Step 4b: embed the training set ONCE (backbone-bound; everything
     # after this is just MLP training on the cached tensors) ---
@@ -362,6 +566,18 @@ def main() -> None:
     # --- Step 4: train only the head, on cached embeddings ---
     print("\nTraining head on cached embeddings...")
     train_head(model, train_features, train_labels, EPOCHS, BATCH_SIZE, LEARNING_RATE, WEIGHT_DECAY)
+
+    # --- Checkpoint: save the trained head, then verify it reloads correctly ---
+    save_head_checkpoint(model, HEAD_CHECKPOINT_PATH)
+    reloaded_head, checkpoint_meta = load_head_checkpoint(HEAD_CHECKPOINT_PATH, device=DEVICE)
+    model.head.eval()  # match reloaded_head's eval() mode — dropout must be off on both sides to compare outputs
+    with torch.no_grad():
+        probe = train_features[: min(8, train_features.size(0))]
+        original_out = model.head(probe)
+        reloaded_out = reloaded_head(probe)
+    if not torch.allclose(original_out, reloaded_out):
+        raise RuntimeError("Checkpoint round-trip mismatch: reloaded head does not match the trained head.")
+    print(f"Checkpoint verified: reloaded head matches trained weights (meta={checkpoint_meta}).")
 
     # --- Step 5: eval — clean, then each perturbation, each embedded once ---
     print("\nEvaluating (each condition embedded once)...")
