@@ -63,3 +63,28 @@ excludes exact duplicate leakage, and writes non-destructive outputs to
 
 The cleaner preserves CIFAKE's supplied split and labels. It does not resize or
 rewrite the 32x32 raw images.
+
+## Cleaning SID-Set Parquet
+
+SID-Set is stored as Parquet shards with embedded `image.bytes` values. Keep
+those shards unchanged and run:
+
+```bash
+python -m src.data.clean_sid_set
+```
+
+This validates embedded image bytes and metadata, preserves the original
+`source_label` values (`0` real, `1` full synthetic, `2` tampered), detects
+exact duplicate leakage across train/validation, and writes a row-level
+manifest to `data/processed/sid_set/`. The manifest references each sample by
+`parquet_file` and `row_index`; it does not copy the images out of Parquet.
+
+The default pass uses up to four concurrent shard workers. Use
+`--workers 1` if memory or disk contention is a concern. Add `--visual-hashes`
+only when you specifically need perceptual-hash review; the default exact
+duplicate check uses the encoded image-byte hash for speed.
+
+The binary mapping for model training is intentionally a later step. The
+cleaner only excludes unreadable rows, invalid metadata/labels, and exact
+duplicate leakage. Perceptual-hash matches are listed in
+`near_duplicate_review.csv` for review and are not automatically excluded.
