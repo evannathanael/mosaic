@@ -5,13 +5,6 @@ __pycache__/
 venv/
 .venv/
 
-# Data (too large for git — document how to fetch it instead)
-data/raw/*
-data/near_duplicates/*
-!data/raw/.gitkeep
-!data/processed/.gitkeep
-!data/near_duplicates/.gitkeep
-
 # Model checkpoints & outputs
 outputs/*
 !outputs/.gitkeep
@@ -29,3 +22,22 @@ outputs/*
 
 # Env
 .env
+
+# Raw datasets stay out of Git. Download or transfer them separately.
+data/raw/**
+!data/raw/.gitkeep
+
+# Commit only the approved cleaning handoff artifacts. The complete audit
+# manifests remain local because they are large and are not needed for training.
+data/processed/**
+!data/processed/.gitkeep
+!data/processed/cifake/
+!data/processed/cifake/clean_manifest.csv
+!data/processed/cifake/cleaning_report.json
+!data/processed/cifake/near_duplicate_review.csv
+!data/processed/cifake/rejected.csv
+!data/processed/sid_set/
+!data/processed/sid_set/clean_manifest.csv
+!data/processed/sid_set/cleaning_report.json
+!data/processed/sid_set/near_duplicate_review.csv
+!data/processed/sid_set/rejected.csv
