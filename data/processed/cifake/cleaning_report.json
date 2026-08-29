@@ -1,0 +1,21 @@
+{
+  "input_dir": "D:\\mosaic\\data\\raw\\CIFAKE",
+  "output_dir": "D:\\mosaic\\data\\processed\\cifake",
+  "files_discovered": 120000,
+  "valid_images": 120000,
+  "included_images": 118664,
+  "rejected_images": 0,
+  "counts_by_split_and_label": {
+    "test/ai": 9962,
+    "test/real": 10000,
+    "train/ai": 48702,
+    "train/real": 50000
+  },
+  "dimensions": {
+    "32x32": 120000
+  },
+  "near_duplicate_review_groups": 8,
+  "exact_duplicate_groups": 1336,
+  "exact_duplicate_images": 2672,
+  "cross_split_groups": 378
+}

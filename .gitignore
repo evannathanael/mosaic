@@ -7,7 +7,6 @@ venv/
 
 # Data (too large for git — document how to fetch it instead)
 data/raw/*
-data/processed/*
 data/near_duplicates/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
