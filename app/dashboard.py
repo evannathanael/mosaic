@@ -1,4 +1,4 @@
-"""Creator Balance — interactive demo dashboard.
+"""Mosaic — interactive demo dashboard.
 
 Upload an image, optionally apply a transform live, and see:
   - AI-generation probability (calibrated)
@@ -22,7 +22,7 @@ from src.data.transforms import NAMED_EVAL_TRANSFORMS, named_eval_transform
 from src.models.classifier import AIGCDetector
 from src.utils import load_config
 
-st.set_page_config(page_title="Creator Balance", layout="wide")
+st.set_page_config(page_title="Mosaic", layout="wide")
 
 
 @st.cache_resource
@@ -43,7 +43,7 @@ def predict(model, config, pil_img: Image.Image) -> float:
     return prob
 
 
-st.title("🎨 Creator Balance")
+st.title("🎨 Mosaic")
 st.caption(
     "AI-image detection + repetition tracking — flags high-volume repeated "
     "synthetic content without penalizing one-off, legitimate AI creativity."

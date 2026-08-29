@@ -77,7 +77,7 @@ def write_report(fp_clean, fn_clean, fp_filtered, out_path: str):
     fp_rate = len(fp_filtered) / max(1, len(fp_filtered))  # placeholder; real rate computed by caller if needed
     lines.append(
         "\n**Why this matters:** a high false-positive rate here would unfairly "
-        "penalize real creators who use filters — see Creator Balance's design "
+        "penalize real creators who use filters — see Mosaic's design "
         "goal of not treating AI-adjacent editing as equivalent to full synthesis.\n"
     )
 

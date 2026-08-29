@@ -63,7 +63,7 @@ def run_inference(input_dir: str, checkpoint_path: str, config: dict, device: st
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run full Creator Balance inference.")
+    parser = argparse.ArgumentParser(description="Run full Mosaic inference.")
     parser.add_argument("--config", default="configs/config.yaml")
     parser.add_argument("--input_dir", required=True)
     parser.add_argument("--checkpoint", required=True)

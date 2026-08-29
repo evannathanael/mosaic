@@ -1,9 +1,9 @@
-# Creator Balance
+# Mosaic
 
 A lightweight AI-generated image (AIGC) detector with a repetition/near-duplicate
 signal on top — built for TikTok TechJam's AIGC Detection track.
 
-**Core idea:** most projects ask *"is this image AI-generated?"*. Creator Balance
+**Core idea:** most projects ask *"is this image AI-generated?"*. Mosaic
 also asks *"is AI-generated content being reposted/repeated at a volume that
 crowds out other creators?"* — so it can flag repetitive synthetic content for
 feed-balancing without penalizing one-off, legitimate AI creativity.
@@ -19,7 +19,7 @@ Image → [Shared Backbone] ──→ Classifier head ──→ AI probability +
 ## Project structure
 
 ```
-creator-balance/
+mosaic/
 ├── configs/config.yaml        # all tunable settings in one place
 ├── data/                      # datasets (gitignored except structure)
 │   ├── raw/                   # downloaded datasets go here
@@ -63,31 +63,27 @@ pip install -r requirements.txt
 
 ## Quickstart
 
-1. **Download & prepare data** (Person 1 / data owner)
+1. **Download & prepare data** (Person 1 — data)
    ```bash
    python src/data/download.py --dataset all --out data/raw
    python src/data/near_duplicate_gen.py --input data/raw/ai --out data/near_duplicates
    ```
 
-2. **Train the classifier** (Person A — training)
+2. **Train the classifier** (Person 2 — training)
    ```bash
    python src/models/train.py --config configs/config.yaml
-   ```
-
-3. **Run training experiments / generalization checks** (Person B — training)
-   ```bash
    python src/models/train.py --config configs/config.yaml --experiment rotation_jitter
-   python src/eval/shortcut_check.py --checkpoint outputs/model_best.pt
    ```
 
-4. **Evaluate robustness** (Person 4 — evaluation)
+3. **Evaluate robustness** (Person 4 — evaluation)
    ```bash
    python src/eval/robustness.py --checkpoint outputs/model_best.pt --out outputs/robustness_table.csv
    python src/eval/calibration.py --checkpoint outputs/model_best.pt
    python src/eval/error_analysis.py --checkpoint outputs/model_best.pt --out outputs/error_analysis.md
+   python src/eval/shortcut_check.py --checkpoint outputs/model_best.pt
    ```
 
-5. **Run full inference (required deliverable format)**
+4. **Run full inference (required deliverable format)**
    ```bash
    python src/inference.py --input_dir path/to/images --checkpoint outputs/model_best.pt --out outputs/predictions.json
    ```
@@ -96,7 +92,7 @@ pip install -r requirements.txt
    {"image_path": "image_01.jpg", "pred": 0.91, "similarity_cluster": 4, "repetition_score": 0.94}
    ```
 
-6. **Launch the demo app** (Person 5 — product/demo)
+5. **Launch the demo app** (Person 5 — product/demo)
    ```bash
    streamlit run app/dashboard.py
    ```
@@ -112,12 +108,11 @@ writes its config + metrics to `outputs/<run_name>/`.
 
 | Area | Owner | Folder |
 |---|---|---|
-| Data & robustness transforms | Person 1 | `src/data/` |
-| Core model training | Person A | `src/models/train.py`, `src/models/classifier.py` |
-| Training experiments & generalization | Person B | `src/models/train.py` (experiment flag), `src/eval/shortcut_check.py` |
-| Similarity & clustering | Person 3 | `src/similarity/` |
-| Evaluation & calibration | Person 4 | `src/eval/` |
-| Demo app | Person 5 | `app/dashboard.py` |
+| Data & robustness transforms | Vicky | `src/data/` |
+| Core model training | Glory | `src/models/` |
+| Similarity & clustering | Chelsea | `src/similarity/` |
+| Evaluation & calibration | Evan | `src/eval/` |
+| Demo app | Eron | `app/dashboard.py` |
 
 ## Limitations & future work
 

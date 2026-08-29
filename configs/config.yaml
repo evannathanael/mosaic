@@ -1,4 +1,4 @@
-# Creator Balance — central config
+# Mosaic — central config
 # Change settings here rather than in code, so every run is reproducible.
 
 seed: 42
