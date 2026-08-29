@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# Data (too large for git — document how to fetch it instead)
+data/raw/*
+data/processed/*
+data/near_duplicates/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/near_duplicates/.gitkeep
+
+# Model checkpoints & outputs
+outputs/*
+!outputs/.gitkeep
+*.pt
+*.pth
+*.ckpt
+
+# Notebooks checkpoints
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Env
+.env

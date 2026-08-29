@@ -1,0 +1,98 @@
+# Creator Balance — central config
+# Change settings here rather than in code, so every run is reproducible.
+
+seed: 42
+
+data:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  near_duplicates_dir: "data/near_duplicates"
+  # Held out entirely from training — used only for the unseen-generator test
+  holdout_generator: "wildfake_gan"
+  train_split: 0.8
+  val_split: 0.1
+  test_split: 0.1
+  image_size: 224
+
+# The 6 required robustness transforms (fixed by the challenge spec — do not
+# change parameter values here without checking the problem statement).
+transforms:
+  jpeg_compression:
+    qualities: [90, 70, 50, 30]
+  gaussian_blur:
+    sigmas: [0.5, 1.0, 2.0]
+  resize:
+    scales: [0.5, 0.25]
+  gaussian_noise:
+    sigmas: [0.02, 0.05, 0.10]
+  color_jitter:
+    brightness: 0.2
+    contrast: 0.2
+    saturation: 0.2
+  center_crop:
+    crop_fraction: 0.8
+
+# Training-only extra augmentation (NOT part of official eval — helps prevent
+# the model from learning color/shortcut cues instead of real AI artifacts,
+# per the workshop's SAFE (KDD 2025) recommendation).
+train_only_augmentation:
+  random_rotation_degrees: 15
+  extra_color_jitter: true
+
+model:
+  backbone: "ViT-B-32"          # open_clip model name
+  pretrained: "openai"          # pretrained weight tag
+  freeze_backbone: true         # set false to fine-tune the backbone too
+  embedding_dim: 512            # must match the chosen backbone's output dim
+  classifier_hidden_dim: 128
+  dropout: 0.2
+
+training:
+  batch_size: 64
+  epochs: 15
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  optimizer: "adamw"
+  scheduler: "cosine"
+  early_stopping_patience: 3
+  device: "cuda"                 # falls back to cpu automatically if unavailable
+
+# Named training-run variants for Person B's parallel experiments.
+# Run with: python src/models/train.py --config configs/config.yaml --experiment <name>
+experiments:
+  baseline:
+    train_only_augmentation:
+      random_rotation_degrees: 0
+      extra_color_jitter: false
+  rotation_jitter:
+    train_only_augmentation:
+      random_rotation_degrees: 15
+      extra_color_jitter: true
+  finetune_backbone:
+    model:
+      freeze_backbone: false
+
+similarity:
+  threshold: 0.85                # cosine similarity threshold for "same cluster"
+  clustering_method: "threshold" # "threshold" or "dbscan"
+  dbscan_eps: 0.15
+  dbscan_min_samples: 2
+
+evaluation:
+  primary_metric: "auc"
+  robustness_conditions:
+    - clean
+    - jpeg_q30
+    - blur_sigma2
+    - crop_80
+    - unseen_generator
+  final_score_weights:
+    auc_clean: 0.5
+    auc_robust: 0.5
+
+calibration:
+  method: "temperature_scaling"
+
+output:
+  dir: "outputs"
+  checkpoint_name: "model_best.pt"
