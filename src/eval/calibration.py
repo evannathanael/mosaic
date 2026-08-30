@@ -72,7 +72,10 @@ def main():
         seed=config["seed"],
     )
     val_ds = EvalDataset(splits["val"], config, eval_transform_name="clean")
-    val_loader = DataLoader(val_ds, batch_size=config["training"]["batch_size"], shuffle=False)
+    val_loader = DataLoader(
+        val_ds, batch_size=config["training"]["batch_size"], shuffle=False,
+        num_workers=4, pin_memory=(args.device == "cuda"),
+    )
 
     temperature = fit_temperature(model, val_loader, args.device)
     model.temperature.data = torch.tensor([temperature])

@@ -108,7 +108,10 @@ def main():
     )
 
     test_ds = EvalDataset(splits["test"], config, eval_transform_name="clean")
-    test_loader = DataLoader(test_ds, batch_size=config["training"]["batch_size"], shuffle=False)
+    test_loader = DataLoader(
+        test_ds, batch_size=config["training"]["batch_size"], shuffle=False,
+        num_workers=4, pin_memory=(args.device == "cuda"),
+    )
     fp_clean, fn_clean = collect_errors(model, test_loader, args.device)
 
     # Heavily-filtered real photos: reuse color_jitter as a stand-in for heavy filtering
@@ -116,7 +119,10 @@ def main():
         [s for s in splits["test"] if s.label == 0],
         config, eval_transform_name="color_jitter",
     )
-    filtered_loader = DataLoader(filtered_ds, batch_size=config["training"]["batch_size"], shuffle=False)
+    filtered_loader = DataLoader(
+        filtered_ds, batch_size=config["training"]["batch_size"], shuffle=False,
+        num_workers=4, pin_memory=(args.device == "cuda"),
+    )
     fp_filtered, _ = collect_errors(model, filtered_loader, args.device)
 
     ensure_dir(str(Path(args.out).parent))
