@@ -1,6 +1,6 @@
 {
-  "input_dir": "D:\\mosaic\\data\\raw\\CIFAKE",
-  "output_dir": "D:\\mosaic\\data\\processed\\cifake",
+  "input_dir": "/Users/glorylion/Mosaic/data/raw/CIFAKE",
+  "output_dir": "/Users/glorylion/Mosaic/data/processed/cifake",
   "files_discovered": 120000,
   "valid_images": 120000,
   "included_images": 118664,
