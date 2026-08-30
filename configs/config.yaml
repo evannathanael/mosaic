@@ -40,7 +40,7 @@ train_only_augmentation:
   extra_color_jitter: true
 
 model:
-  backbone: "ViT-L-14"          # open_clip model name
+  backbone: "ViT-L-14-quickgelu" # open_clip model name
   pretrained: "openai"          # pretrained weight tag
   freeze_backbone: true         # set false to fine-tune the backbone too
   embedding_dim: 768            # must match the chosen backbone's output dim
@@ -75,9 +75,6 @@ experiments:
 similarity:
   threshold: 0.85                # cosine similarity threshold for "same cluster"
   clustering_method: "threshold" # "threshold" or "dbscan"
-  # PLACEHOLDER: not yet tuned against a real near-duplicate ground truth set.
-  # Revisit once src/data/near_duplicate_gen.py's manifest is available and
-  # evaluate_clustering() can be run to pick eps by pairwise precision/recall.
   dbscan_eps: 0.15
   dbscan_min_samples: 2
 

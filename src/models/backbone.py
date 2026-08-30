@@ -34,7 +34,7 @@ class SharedBackbone(nn.Module):
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         """images: (B, 3, H, W) float tensor, normalized to roughly [-1, 1].
         Returns: (B, embedding_dim) embedding — used for BOTH classification
-        (via classifier.py) and similarity (via similarity/embed.py).
+        (via classifier.py) and similarity (via similarity/embeddings.py).
         """
         return self.encoder(images)
 
