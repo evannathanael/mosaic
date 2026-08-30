@@ -15,8 +15,8 @@ from pathlib import Path
 import numpy as np
 
 from src.models.backbone import SharedBackbone
-from src.similarity.embeddings import extract_embeddings, cosine_similarity_matrix
-from src.similarity.clustering import cluster_threshold, evaluate_clustering
+from src.similarity.embed import extract_embeddings, cosine_similarity_matrix
+from src.similarity.similarity import cluster_threshold, evaluate_clustering
 from src.utils import load_config, get_logger
 
 logger = get_logger(__name__)
