@@ -10,12 +10,13 @@ Usage:
     python src/eval/error_analysis.py --checkpoint outputs/baseline/model_best.pt --out outputs/error_analysis.md
 """
 import argparse
+from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
 
-from src.data.dataset import scan_dataset, split_samples, AIGCDataset
-from src.models.classifier import AIGCDetector
+from src.data.dataset import split_samples
+from src.eval.data_compat import scan_all_sources, load_eval_model, EvalDataset
 from src.utils import load_config, get_logger, ensure_dir
 
 logger = get_logger(__name__)
@@ -95,9 +96,9 @@ def main():
     args = parser.parse_args()
 
     config = load_config(args.config)
-    model = AIGCDetector.load(args.checkpoint, config, device=args.device)
+    model = load_eval_model(args.checkpoint, config, device=args.device)
 
-    samples = scan_dataset(config["data"]["raw_dir"])
+    samples = scan_all_sources(config)
     splits = split_samples(
         samples,
         holdout_generator=config["data"]["holdout_generator"],
@@ -106,19 +107,19 @@ def main():
         seed=config["seed"],
     )
 
-    test_ds = AIGCDataset(splits["test"], config, mode="eval", eval_transform_name="clean")
+    test_ds = EvalDataset(splits["test"], config, eval_transform_name="clean")
     test_loader = DataLoader(test_ds, batch_size=config["training"]["batch_size"], shuffle=False)
     fp_clean, fn_clean = collect_errors(model, test_loader, args.device)
 
     # Heavily-filtered real photos: reuse color_jitter as a stand-in for heavy filtering
-    filtered_ds = AIGCDataset(
+    filtered_ds = EvalDataset(
         [s for s in splits["test"] if s.label == 0],
-        config, mode="eval", eval_transform_name="color_jitter",
+        config, eval_transform_name="color_jitter",
     )
     filtered_loader = DataLoader(filtered_ds, batch_size=config["training"]["batch_size"], shuffle=False)
     fp_filtered, _ = collect_errors(model, filtered_loader, args.device)
 
-    ensure_dir(str(__import__("pathlib").Path(args.out).parent))
+    ensure_dir(str(Path(args.out).parent))
     write_report(fp_clean, fn_clean, fp_filtered, args.out)
 
 

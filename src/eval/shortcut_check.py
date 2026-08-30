@@ -25,8 +25,8 @@ import torch
 from torch.utils.data import DataLoader
 from scipy.stats import pointbiserialr
 
-from src.data.dataset import scan_dataset, split_samples, AIGCDataset
-from src.models.classifier import AIGCDetector
+from src.data.dataset import split_samples
+from src.eval.data_compat import scan_all_sources, load_eval_model, EvalDataset
 from src.utils import load_config, get_logger
 
 logger = get_logger(__name__)
@@ -36,10 +36,18 @@ def estimate_jpeg_quality_proxy(path: str) -> float:
     """Cheap proxy for compression level: file size relative to pixel count.
     Lower value ~ more compressed. Not a precise quality estimate, but enough
     to check for gross correlation with predictions.
+
+    Only meaningful for plain on-disk files (CIFAKE) — SID-Set/WildFake
+    samples carry a pseudo-path (see src/eval/data_compat.py) with no real
+    file to stat, so this returns NaN for those and they're excluded from
+    this particular check below (the per-source breakdown, Check 2, has no
+    such limitation and still covers every source).
     """
     import os
     from PIL import Image
 
+    if "://" in path:
+        return float("nan")
     try:
         size_bytes = os.path.getsize(path)
         with Image.open(path) as img:
@@ -50,8 +58,8 @@ def estimate_jpeg_quality_proxy(path: str) -> float:
 
 
 def run_shortcut_check(config: dict, checkpoint_path: str, device: str = "cpu"):
-    model = AIGCDetector.load(checkpoint_path, config, device=device)
-    samples = scan_dataset(config["data"]["raw_dir"])
+    model = load_eval_model(checkpoint_path, config, device=device)
+    samples = scan_all_sources(config)
     splits = split_samples(
         samples,
         holdout_generator=config["data"]["holdout_generator"],
@@ -59,7 +67,7 @@ def run_shortcut_check(config: dict, checkpoint_path: str, device: str = "cpu"):
         val_split=config["data"]["val_split"],
         seed=config["seed"],
     )
-    test_ds = AIGCDataset(splits["test"], config, mode="eval", eval_transform_name="clean")
+    test_ds = EvalDataset(splits["test"], config, eval_transform_name="clean")
     loader = DataLoader(test_ds, batch_size=config["training"]["batch_size"], shuffle=False)
 
     probs, labels, paths, generators = [], [], [], []

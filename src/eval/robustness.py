@@ -9,14 +9,15 @@ Usage:
     python src/eval/robustness.py --checkpoint outputs/baseline/model_best.pt --out outputs/robustness_table.csv
 """
 import argparse
+from pathlib import Path
 
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 from sklearn.metrics import roc_auc_score, accuracy_score
 
-from src.data.dataset import scan_dataset, split_samples, AIGCDataset
-from src.models.classifier import AIGCDetector
+from src.data.dataset import split_samples
+from src.eval.data_compat import scan_all_sources, load_eval_model, EvalDataset
 from src.utils import load_config, get_logger, ensure_dir
 
 logger = get_logger(__name__)
@@ -35,7 +36,7 @@ CONDITIONS = [
 
 
 def evaluate_condition(model, samples, transform_name, config, device) -> dict:
-    ds = AIGCDataset(samples, config, mode="eval", eval_transform_name=transform_name)
+    ds = EvalDataset(samples, config, eval_transform_name=transform_name)
     loader = DataLoader(ds, batch_size=config["training"]["batch_size"], shuffle=False, num_workers=4)
 
     all_probs, all_labels = [], []
@@ -56,9 +57,9 @@ def evaluate_condition(model, samples, transform_name, config, device) -> dict:
 
 
 def build_robustness_table(config: dict, checkpoint_path: str, device: str = "cpu") -> pd.DataFrame:
-    model = AIGCDetector.load(checkpoint_path, config, device=device)
+    model = load_eval_model(checkpoint_path, config, device=device)
 
-    samples = scan_dataset(config["data"]["raw_dir"])
+    samples = scan_all_sources(config)
     splits = split_samples(
         samples,
         holdout_generator=config["data"]["holdout_generator"],
@@ -106,7 +107,7 @@ def main():
     config = load_config(args.config)
     df = build_robustness_table(config, args.checkpoint, args.device)
 
-    ensure_dir(str(Path := __import__("pathlib").Path(args.out).parent))
+    ensure_dir(str(Path(args.out).parent))
     df.to_csv(args.out, index=False)
     logger.info("Robustness table saved to %s", args.out)
     if "final_score" in df.attrs:
