@@ -78,7 +78,7 @@ def scan_cifake_nested(cifake_root: Path) -> list[Sample]:
     return samples
 
 
-def scan_sid_set_manifest(manifest_path: Path) -> list[Sample]:
+def scan_sid_set_manifest(manifest_path: Path, raw_root: Path) -> list[Sample]:
     """Reads Vicky's cleaned SID-Set manifest (data/processed/sid_set/
     clean_manifest.csv) and returns Sample objects referencing Parquet rows
     via a pseudo-path (see module docstring) — actual image bytes are never
@@ -88,9 +88,17 @@ def scan_sid_set_manifest(manifest_path: Path) -> list[Sample]:
     check that SidSetParquetDataset itself does NOT do (it only filters by
     split) — clean_manifest.csv marks duplicate/rejected rows include=False,
     so respecting it here is stricter than the existing training loader.
+
+    The full dataset is ~141GB (249 train + 34 validation Parquet shards) —
+    too big for a standard Colab disk, so downloading only some shards is
+    the expected/supported case, not an error: rows whose shard isn't present
+    under `raw_root` are silently skipped rather than causing a crash later
+    when EvalDataset tries to open a file that was never downloaded.
     """
     manifest_path = Path(manifest_path)
+    raw_root = Path(raw_root)
     samples: list[Sample] = []
+    skipped_missing_shard = 0
     with open(manifest_path, newline="", encoding="utf-8") as stream:
         for row in csv.DictReader(stream):
             if row.get("include") != "True":
@@ -98,29 +106,48 @@ def scan_sid_set_manifest(manifest_path: Path) -> list[Sample]:
             binary_label = sid_set_label_policy(int(row["source_label"]))
             if binary_label is None:
                 continue
+            if not (raw_root / row["parquet_file"]).exists():
+                skipped_missing_shard += 1
+                continue
             path = f"{SID_SET_SCHEME}{row['parquet_file']}#{row['row_index']}"
             samples.append(Sample(path=path, label=binary_label, generator="sid_set"))
+    if skipped_missing_shard:
+        logger.info(
+            "SID-Set: %d rows skipped — shard not downloaded (only a partial fetch is expected given the ~141GB full size)",
+            skipped_missing_shard,
+        )
     return samples
 
 
-def scan_wildfake_manifest(manifest_path: Path) -> list[Sample]:
+def scan_wildfake_manifest(manifest_path: Path, raw_root: Path) -> list[Sample]:
     """Reads Vicky's cleaned WildFake manifest (data/processed/wildfake/
     clean_manifest.csv) and returns Sample objects referencing ZIP members
     via a pseudo-path (see module docstring). generator is tagged
     "wildfake_<generator>" (e.g. "wildfake_afhq", "wildfake_DDIM"), matching
     scan_dataset()'s existing wildfake generator-tagging convention in
     src/data/dataset.py, so per-source breakdowns line up either way.
+
+    Same partial-download tolerance as scan_sid_set_manifest: rows whose
+    archive isn't present under `raw_root` are skipped rather than crashing
+    later, so downloading only some of the 5 focused-subset archives works.
     """
     manifest_path = Path(manifest_path)
+    raw_root = Path(raw_root)
     samples: list[Sample] = []
+    skipped_missing_archive = 0
     with open(manifest_path, newline="", encoding="utf-8") as stream:
         for row in csv.DictReader(stream):
             if row.get("include") != "True":
+                continue
+            if not (raw_root / row["archive_path"]).exists():
+                skipped_missing_archive += 1
                 continue
             path = f"{WILDFAKE_SCHEME}{row['archive_path']}#{row['member_path']}"
             samples.append(
                 Sample(path=path, label=int(row["source_label"]), generator=f"wildfake_{row['generator']}")
             )
+    if skipped_missing_archive:
+        logger.info("WildFake: %d rows skipped — archive not downloaded", skipped_missing_archive)
     return samples
 
 
@@ -128,7 +155,10 @@ def scan_all_sources(config: dict) -> list[Sample]:
     """Combines CIFAKE + SID-Set + WildFake into one Sample pool, skipping
     (with a warning, not an error) whichever source isn't actually on disk —
     mirrors how robustness.py already tolerates an empty split rather than
-    crashing when a dataset hasn't been downloaded yet.
+    crashing when a dataset hasn't been downloaded yet. SID-Set/WildFake are
+    additionally tolerant of a *partial* download (see scan_sid_set_manifest/
+    scan_wildfake_manifest) since both are too large to fit in full alongside
+    everything else on a standard Colab disk.
     """
     raw_dir = Path(config["data"]["raw_dir"])
     processed_dir = Path(config["data"]["processed_dir"])
@@ -144,7 +174,7 @@ def scan_all_sources(config: dict) -> list[Sample]:
 
     sid_set_manifest = processed_dir / "sid_set" / "clean_manifest.csv"
     if sid_set_manifest.exists():
-        sid_set_samples = scan_sid_set_manifest(sid_set_manifest)
+        sid_set_samples = scan_sid_set_manifest(sid_set_manifest, raw_dir / "sid_set")
         logger.info("SID-Set: %d samples", len(sid_set_samples))
         samples.extend(sid_set_samples)
     else:
@@ -152,7 +182,7 @@ def scan_all_sources(config: dict) -> list[Sample]:
 
     wildfake_manifest = processed_dir / "wildfake" / "clean_manifest.csv"
     if wildfake_manifest.exists():
-        wildfake_samples = scan_wildfake_manifest(wildfake_manifest)
+        wildfake_samples = scan_wildfake_manifest(wildfake_manifest, raw_dir / "wildfake")
         logger.info("WildFake: %d samples", len(wildfake_samples))
         samples.extend(wildfake_samples)
     else:
