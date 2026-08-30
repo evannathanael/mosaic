@@ -8,7 +8,7 @@ also asks *"is AI-generated content being reposted/repeated at a volume that
 crowds out other creators?"* — so it can flag repetitive synthetic content for
 feed-balancing without penalizing one-off, legitimate AI creativity.
 
-Both signals share **one lightweight backbone** (CLIP ViT-B by default), keeping
+Both signals share **one lightweight backbone** (CLIP ViT-L/14 by default), keeping
 the whole pipeline well under the 2B parameter limit.
 
 ```
@@ -36,8 +36,8 @@ mosaic/
 │   │   ├── classifier.py      # classifier head on top of the backbone
 │   │   └── train.py           # main training loop (Person A)
 │   ├── similarity/
-│   │   ├── embeddings.py      # extract embeddings from the shared backbone
-│   │   └── clustering.py      # cosine similarity + near-duplicate clustering
+│   │   ├── embed.py           # extract embeddings from the shared backbone
+│   │   └── similarity.py      # cosine similarity + near-duplicate clustering
 │   ├── eval/
 │   │   ├── robustness.py      # clean vs. transformed vs. unseen-generator AUC table
 │   │   ├── calibration.py     # temperature scaling for calibrated confidence
@@ -96,6 +96,46 @@ pip install -r requirements.txt
    ```bash
    streamlit run app/dashboard.py
    ```
+
+## Similarity / near-duplicate clustering module (`src/similarity/`)
+
+Owned by Chelsea (Person 3). Given a folder of images, this module extracts
+embeddings from the shared frozen CLIP backbone, clusters near-duplicates by
+cosine similarity, and computes a per-image repetition score. No training —
+inference and clustering only.
+
+**Inputs:** a folder path (or list of image paths) plus `configs/config.yaml`
+(backbone choice, DBSCAN/threshold params).
+
+**Outputs (per image):**
+- `similarity_cluster` — integer cluster ID (images in the same cluster are
+  near-duplicates)
+- `repetition_score` — `(cluster size - 1) / total images in the folder`,
+  i.e. how much of the corpus is made up of near-duplicates of this image
+  (`0.0` = unique, higher = part of a larger repeated group)
+
+**Files:**
+- `embed.py` — `embed(image_path)` embeds a single image to a 768-dim
+  L2-normalized vector (CLIP ViT-L/14); `embed_folder(folder_path)` returns
+  `{path: embedding}` for every image in a folder. Preprocessing uses
+  open_clip's own default transform for the configured backbone (not a
+  hand-rolled resize/normalize), since the backbone is frozen and never
+  fine-tuned here.
+- `similarity.py` — `cosine_similarity(embeddings)` for the pairwise
+  similarity matrix; `cluster_images(embeddings, config)` clusters via DBSCAN
+  (cosine distance) or a simpler union-find threshold method, selected by
+  `similarity.clustering_method` in `configs/config.yaml`; `repetition_score(cluster_ids)`
+  computes the per-image score above.
+
+**Known placeholder:** `similarity.dbscan_eps` in `configs/config.yaml` is
+**not yet tuned** — there's no near-duplicate ground truth set available yet.
+Once `src/data/near_duplicate_gen.py`'s manifest exists, run
+`evaluate_clustering()` in `similarity.py` to pick `eps` by pairwise
+precision/recall against ground truth.
+
+**Tests:** `tests/test_similarity.py` uses synthetic embeddings (no real
+images or network calls) to verify near-duplicate vectors cluster together
+and unrelated vectors don't.
 
 ## Reproducing results
 
