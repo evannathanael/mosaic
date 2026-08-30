@@ -1,27 +1,46 @@
-"""Train a frozen-CLIP + MLP-head AI-image detector on CIFAKE or SID-Set, then
-report accuracy on clean test images AND on each robustness perturbation
-separately.
+"""Train a frozen-CLIP + MLP-head AI-image detector on CIFAKE, SID-Set, or
+WildFake, then report accuracy on clean test images AND on each robustness
+perturbation separately.
 
 Which dataset trains/evaluates is a single switch — DATASET below — so you
 can flip between them without touching anything downstream:
-    - "cifake":  torchvision.datasets.ImageFolder over data/raw/CIFAKE/{train,test}
-    - "sid_set": reads Vicky's cleaned manifest (data/processed/sid_set) and
+    - "cifake":   torchvision.datasets.ImageFolder over data/raw/CIFAKE/{train,test}
+    - "sid_set":  reads Vicky's cleaned manifest (data/processed/sid_set) and
       fetches image bytes on demand from the Parquet shards it references
       (data/raw/sid_set) — see SidSetParquetDataset below. SID-Set has 3
       source labels (0=real, 1=full synthetic, 2=tampered); this loader keeps
       0->0 and 1->1 and drops 2 entirely, applying that binary policy itself
       since Vicky's cleaner deliberately does not (confirmed in its docstring
       and data/README.md — see sid_set_label_policy()).
-Both loaders produce the exact same (image, binary_label) shape per item, so
+    - "wildfake": reads Vicky's cleaned manifest (data/processed/wildfake) and
+      fetches image bytes on demand from the ZIP archives it references
+      (data/raw/wildfake) — see WildfakeArchiveDataset below. UNLIKE SID-Set,
+      src/data/clean_wildfake.py already writes BINARY source_label values (0
+      real, 1 AI) straight from the archive source, so there's no 3-way
+      policy to collapse here — see wildfake_label_policy(), which is an
+      identity mapping kept only so every dataset has one obvious place its
+      label policy lives.
+      NOTE: WildFake is NOT loaded via the ModelScope SDK (no
+      modelscope.msdatasets.MsDataset.load() anywhere in this repo) — it
+      requires manually translating the dataset page and downloading a
+      hand-picked archive subset first (src/data/download.py's
+      download_wildfake() just prints that reminder, it doesn't fetch
+      anything), then Vicky's clean_wildfake.py validates those ZIPs in
+      place. This loader reads that already-established manifest+archive
+      system rather than hitting ModelScope at runtime, matching how the
+      SID-Set loader reads Vicky's manifest instead of re-touching Hugging
+      Face at runtime.
+Every loader produces the exact same (image, binary_label) shape per item, so
 everything past dataset construction — the frozen backbone, the embedding
 cache, the MLP head, robustness eval, and checkpointing — is 100% shared code.
 
 Pipeline:
     1. Load the selected dataset (see DATASET switch above).
-    2. Labels are 0 = real, 1 = AI ("fake") for both datasets. CIFAKE's
+    2. Labels are 0 = real, 1 = AI ("fake") for all three datasets. CIFAKE's
        ImageFolder assigns indices alphabetically (FAKE=0, REAL=1) — the
        OPPOSITE of this project's convention — so BinaryCifakeFolder remaps
-       it; SID-Set's remap is the label policy described above.
+       it; SID-Set's and WildFake's remaps are the label policies described
+       above.
     3. Build the model: frozen open_clip ViT-L/14 backbone (`AIGCClipDetector`
        in clip_aigc_head.py) + a small trainable MLP head.
     4. EMBED ONCE, then train the head on cached embeddings (the perf fix):
@@ -63,6 +82,7 @@ import csv
 import io
 import random
 import time
+import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -80,7 +100,7 @@ from src.models.clip_aigc_head import AIGCClipDetector, MlpHead
 # CONFIG — edit these first. Shrink the *_SUBSET values for fast CPU runs;
 # set them to None to use the full dataset once you scale up (e.g. on Colab).
 # =====================================================================
-DATASET = "cifake"  # "cifake" or "sid_set" — flip this to switch datasets; also names outputs/{DATASET}_*
+DATASET = "cifake"  # "cifake", "sid_set", or "wildfake" — flip this to switch datasets; also names outputs/{DATASET}_*
 
 TRAIN_SUBSET = 200   # images PER CLASS from the selected dataset's train split (None = all)
 VAL_SUBSET = 200      # images PER CLASS from the selected dataset's eval split, used for the table (None = all)
@@ -108,6 +128,16 @@ TEST_DIR = DATA_ROOT / "test"
 SID_SET_RAW_ROOT = Path("data/raw/sid_set")
 SID_SET_MANIFEST_DIR = Path("data/processed/sid_set")
 SID_SET_SPLITS = {"train": "train", "eval": "validation"}  # SID-Set's eval split is named "validation", not "test"
+
+# WildFake: Vicky's cleaner (src/data/clean_wildfake.py) writes a manifest
+# here referencing each image by (archive_path, member_path) inside a ZIP —
+# WILDFAKE_MANIFEST_DIR/clean_manifest.csv is what WildfakeArchiveDataset
+# reads, WILDFAKE_RAW_ROOT is where the (manually downloaded) ZIP archives
+# live. clean_wildfake.py's splits are train/validation/test; this loader
+# uses "validation" as the eval split, matching SID_SET_SPLITS's convention.
+WILDFAKE_RAW_ROOT = Path("data/raw/wildfake")
+WILDFAKE_MANIFEST_DIR = Path("data/processed/wildfake")
+WILDFAKE_SPLITS = {"train": "train", "eval": "validation"}
 
 CLIP_MODEL_NAME = "ViT-L-14"
 CLIP_PRETRAINED = "openai"   # first run downloads + caches weights (~890MB) via open_clip/HF hub
@@ -299,6 +329,81 @@ class SidSetParquetDataset(torch.utils.data.Dataset):
 
 
 # =====================================================================
+# Step 1-2 (alt): WildFake — ZIP-archive-backed dataset, same role as
+# SidSetParquetDataset, different on-demand storage format
+# =====================================================================
+def wildfake_label_policy(source_label: int) -> int | None:
+    """0=real -> 0, 1=AI -> 1.
+
+    Unlike SID-Set, src/data/clean_wildfake.py already writes BINARY
+    source_label values straight from the archive source (0 real, 1 AI) —
+    its docstring says so verbatim ("Labels are binary and are derived only
+    from the archive source... no relabeling or model-based filtering is
+    performed"), confirmed in data/README.md too. So this is an identity
+    mapping — there's no 3-way scheme to collapse here — kept as its own
+    function only so every dataset's label policy lives in one obvious,
+    named place, matching sid_set_label_policy()'s pattern.
+    """
+    if source_label in (0, 1):
+        return source_label
+    return None
+
+
+class WildfakeArchiveDataset(torch.utils.data.Dataset):
+    """Reads WildFake images referenced by Vicky's cleaned manifest, fetching
+    image bytes on demand from the ZIP archives under `raw_root` — the
+    manifest stores (archive_path, member_path), not copies of the images.
+
+    Same role as SidSetParquetDataset, different storage: ZIP files support
+    genuinely cheap random-access reads of a single named member (no need to
+    materialize a whole archive's images in memory the way a Parquet column
+    read does), so this only caches open ZipFile handles, not decoded bytes.
+
+    Duck-types the same interface — `.samples`, mutable `.transform`,
+    `__getitem__` -> (image, binary_label) — so stratified_indices() and
+    embed_indices() work on it completely unchanged.
+    """
+
+    def __init__(self, manifest_path: Path, raw_root: Path, split: str, transform=None):
+        self.raw_root = Path(raw_root)
+        self.transform = transform
+        self.samples: list[tuple[tuple[str, str], int]] = []
+
+        with open(manifest_path, newline="", encoding="utf-8") as stream:
+            for row in csv.DictReader(stream):
+                if row["split"] != split:
+                    continue
+                binary_label = wildfake_label_policy(int(row["source_label"]))
+                if binary_label is None:
+                    continue
+                self.samples.append(((row["archive_path"], row["member_path"]), binary_label))
+
+        if not self.samples:
+            raise ValueError(
+                f"No usable rows for split={split!r} in {manifest_path} after the label policy — "
+                f"check the manifest exists (run src/data/clean_wildfake.py) and that split name is right."
+            )
+
+        self._archive_cache: dict[str, zipfile.ZipFile] = {}  # archive_path -> open handle, per worker process
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def _open_archive(self, archive_path: str) -> zipfile.ZipFile:
+        if archive_path not in self._archive_cache:
+            self._archive_cache[archive_path] = zipfile.ZipFile(self.raw_root / archive_path)
+        return self._archive_cache[archive_path]
+
+    def __getitem__(self, index: int):
+        (archive_path, member_path), label = self.samples[index]
+        raw = self._open_archive(archive_path).read(member_path)
+        image = Image.open(io.BytesIO(raw)).convert("RGB")
+        if self.transform is not None:
+            image = self.transform(image)
+        return image, label
+
+
+# =====================================================================
 # Dataset builders — the ONLY thing the DATASET switch changes. Everything
 # past this point (embed_indices, train_head, evaluate_head, checkpointing)
 # only ever sees (dataset, indices) and doesn't know or care which dataset
@@ -325,7 +430,26 @@ def build_sid_set_datasets():
     return train_base, train_indices, eval_base, eval_indices
 
 
-DATASET_BUILDERS = {"cifake": build_cifake_datasets, "sid_set": build_sid_set_datasets}
+def build_wildfake_datasets():
+    manifest_path = WILDFAKE_MANIFEST_DIR / "clean_manifest.csv"
+    train_base = WildfakeArchiveDataset(
+        manifest_path, WILDFAKE_RAW_ROOT, split=WILDFAKE_SPLITS["train"], transform=None
+    )
+    train_indices = stratified_indices(train_base, TRAIN_SUBSET, seed=SEED)
+    eval_base = WildfakeArchiveDataset(
+        manifest_path, WILDFAKE_RAW_ROOT, split=WILDFAKE_SPLITS["eval"], transform=None
+    )
+    eval_indices = stratified_indices(eval_base, VAL_SUBSET, seed=SEED)
+    print(f"Train samples: {len(train_indices)} (from {manifest_path}, split={WILDFAKE_SPLITS['train']!r})")
+    print(f"Eval samples: {len(eval_indices)} (from {manifest_path}, split={WILDFAKE_SPLITS['eval']!r})")
+    return train_base, train_indices, eval_base, eval_indices
+
+
+DATASET_BUILDERS = {
+    "cifake": build_cifake_datasets,
+    "sid_set": build_sid_set_datasets,
+    "wildfake": build_wildfake_datasets,
+}
 
 
 # =====================================================================
