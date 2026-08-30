@@ -73,8 +73,8 @@ experiments:
       freeze_backbone: false
 
 similarity:
-  threshold: 0.85                # cosine similarity threshold for "same cluster"
-  clustering_method: "threshold" # "threshold" or "dbscan"
+  threshold: 0.90
+  clustering_method: "threshold"
   dbscan_eps: 0.15
   dbscan_min_samples: 2
 

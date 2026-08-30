@@ -30,3 +30,5 @@ outputs/*
 
 # Env
 .env
+data/near_duplicates_hires/
+data/near_duplicates_sid/
