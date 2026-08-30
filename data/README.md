@@ -88,3 +88,26 @@ The binary mapping for model training is intentionally a later step. The
 cleaner only excludes unreadable rows, invalid metadata/labels, and exact
 duplicate leakage. Perceptual-hash matches are listed in
 `near_duplicate_review.csv` for review and are not automatically excluded.
+
+## Cleaning the focused WildFake subset
+
+The complete WildFake repository is about 1.2 TiB, so the hackathon pass uses
+only AFHQ, CelebA-HQ, Church (real) and DDIM, DDPM (AI). COCO val2017 and
+DALL-E Advanced are holdouts and are excluded automatically by the cleaner.
+Download the selected archives, then run:
+
+```bash
+python -m src.data.clean_wildfake
+```
+
+The cleaner validates image members inside ZIP files without extracting a
+second full copy. It preserves `archive_path` and `member_path` in the
+manifest, assigns binary `source_label` values (0 real, 1 AI), removes exact
+duplicate copies, and records optional dHash matches in
+`near_duplicate_review.csv`. It writes `manifest.csv`, `clean_manifest.csv`,
+`rejected.csv`, `rejected_archives.csv`, and `cleaning_report.json` under
+`data/processed/wildfake/`.
+
+Use `--max-per-source N` for a smaller balanced sample. The output manifest
+references ZIP members; a downstream training loader must either read those
+members directly or materialize the approved rows to ordinary image files.
