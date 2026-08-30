@@ -3,9 +3,9 @@
 A lightweight AI-generated image (AIGC) detector with a repetition/near-duplicate
 signal on top — built for TikTok TechJam's AIGC Detection track.
 
-**Core idea:** most projects ask *"is this image AI-generated?"*. Mosaic
-also asks *"is AI-generated content being reposted/repeated at a volume that
-crowds out other creators?"* — so it can flag repetitive synthetic content for
+**Core idea:** most projects ask _"is this image AI-generated?"_. Mosaic
+also asks _"is AI-generated content being reposted/repeated at a volume that
+crowds out other creators?"_ — so it can flag repetitive synthetic content for
 feed-balancing without penalizing one-off, legitimate AI creativity.
 
 Both signals share **one lightweight backbone** (CLIP ViT-B by default), keeping
@@ -20,37 +20,90 @@ Image → [Shared Backbone] ──→ Classifier head ──→ AI probability +
 
 ```
 mosaic/
-├── configs/config.yaml        # all tunable settings in one place
-├── data/                      # datasets (gitignored except structure)
-│   ├── raw/                   # downloaded datasets go here
-│   ├── processed/             # cleaned/split data
-│   └── near_duplicates/       # generated near-duplicate test variants
+├── configs/config.yaml            # all tunable settings in one place
+├── data/                          # datasets (gitignored except structure)
+│   ├── raw/                       # downloaded datasets go here
+│   ├── processed/                 # cleaned/split data
+│   ├── near_duplicates/           # generated near-duplicate test variants
+│   ├── demo_accounts/             # curated images for the two seed accounts
+│   │   ├── flood/                 # ~40 near-identical AI images, one handle
+│   │   └── creator/                # ~12 distinct AI images, one handle
+│   └── demo_seed.json             # pre-scored Post[] built from demo_accounts/,
+│                                    # loaded by the backend at startup
 ├── src/
 │   ├── data/
-│   │   ├── download.py        # dataset download helpers
-│   │   ├── transforms.py      # the 6 required robustness transforms
-│   │   ├── dataset.py         # PyTorch Dataset + train/val/test split logic
+│   │   ├── download.py            # dataset download helpers
+│   │   ├── transforms.py          # the required robustness transforms
+│   │   ├── dataset.py             # PyTorch Dataset + train/val/test split logic
 │   │   └── near_duplicate_gen.py  # builds near-duplicate variant test set
 │   ├── models/
-│   │   ├── backbone.py        # shared CLIP backbone loader (frozen or fine-tune)
-│   │   ├── classifier.py      # classifier head on top of the backbone
-│   │   └── train.py           # main training loop (Person A)
+│   │   ├── backbone.py            # shared CLIP backbone loader (frozen or fine-tune)
+│   │   ├── classifier.py          # classifier head on top of the backbone
+│   │   └── train.py               # main training loop -> writes models/detector.joblib
 │   ├── similarity/
-│   │   ├── embeddings.py      # extract embeddings from the shared backbone
-│   │   └── clustering.py      # cosine similarity + near-duplicate clustering
+│   │   ├── embeddings.py          # extract embeddings from the shared backbone
+│   │   └── clustering.py          # cosine similarity + near-duplicate clustering
 │   ├── eval/
-│   │   ├── robustness.py      # clean vs. transformed vs. unseen-generator AUC table
-│   │   ├── calibration.py     # temperature scaling for calibrated confidence
-│   │   ├── error_analysis.py  # false positive / false negative report
-│   │   └── shortcut_check.py  # sanity check: is the model learning real signal?
-│   ├── inference.py           # end-to-end script: image folder -> required JSON output
-│   └── utils.py                # shared helpers (seeding, config loading, logging)
-├── app/
-│   └── dashboard.py            # Streamlit demo app
-├── scripts/                    # thin shell wrappers around the src/ entry points
+│   │   ├── robustness.py          # clean vs. transformed vs. unseen-generator AUC table
+│   │   ├── calibration.py         # temperature scaling for calibrated confidence
+│   │   ├── error_analysis.py      # false positive / false negative report
+│   │   └── shortcut_check.py      # sanity check: is the model learning real signal?
+│   ├── inference.py                # shared inference fn: image -> (embedding, ai_prob,
+│   │                                # repetition_score, diversity_label) — imported by
+│   │                                # BOTH build_dataset.py and the live backend, so
+│   │                                # scoring logic exists in exactly one place
+│   ├── build_dataset.py            # batch entry point: data/demo_accounts/ ->
+│   │                                # data/demo_seed.json (run once before the demo)
+│   └── utils.py                     # shared helpers (seeding, config loading, logging)
+├── models/
+│   └── detector.joblib              # trained classifier head, loaded once by the backend
+│
+├── backend/                          # FastAPI — loads the model, serves the live app
+│   ├── server.py                     # app + lifespan (loads detector.joblib once, warms
+│   │                                  # CLIP, seeds STATE["feed"] from demo_seed.json)
+│   ├── routes/
+│   │   ├── feed.py                   # GET /feed
+│   │   ├── upload.py                 # POST /upload  (saves file, calls src/inference.py,
+│   │   │                             #  appends to in-memory feed, returns Post)
+│   │   └── admin.py                  # POST /reset  (wipes live uploads back to seed)
+│   ├── state.py                      # the in-memory STATE dict (feed list, embeddings list)
+│   ├── uploads/                      # gitignored — images saved from live /upload calls
+│   └── requirements.txt              # fastapi, uvicorn, joblib, pillow, open_clip, numpy
+│
+├── frontend/                         # React (Vite) — the feed UI
+│   ├── index.html
+│   ├── vite.config.ts
+│   ├── package.json
+│   ├── public/
+│   │   └── mock-thumbs/              # gradient/SVG placeholder thumbnails for mock mode
+│   └── src/
+│       ├── main.tsx
+│       ├── App.tsx                   # view switcher: Feed / Cluster sheet / Account compare
+│       ├── api.ts                    # USE_MOCK flag; GET /feed, POST /upload, POST /reset
+│       ├── mock/
+│       │   └── fixtures.ts           # mock Post[] matching the backend contract exactly
+│       ├── types.ts                  # shared Post / Cluster / AccountSummary types
+│       ├── components/
+│       │   ├── Feed.tsx              # scroll-snap vertical feed
+│       │   ├── PostCard.tsx          # single card: image, handle, diversity badge
+│       │   ├── UploadButton.tsx      # floating upload control, optimistic-append logic
+│       │   ├── ClusterSheet.tsx      # kept-vs-suppressed detail sheet
+│       │   └── AccountCompare.tsx    # flood vs. creator side-by-side view
+│       ├── styles/
+│       │   ├── tokens.css            # color tokens, type scale from the design system
+│       │   └── feed.css              # scroll-snap rules
+│       └── hooks/
+│           └── useAbortableUpload.ts # AbortController wrapper for the live upload call
+│
+├── scripts/
+│   ├── run_backend.sh                # uvicorn backend.server:app --port 8000
+│   ├── run_frontend.sh               # cd frontend && npm run dev
+│   ├── run_demo.sh                   # runs both, for a one-command local demo start
+│   └── build_seed.sh                 # thin wrapper: python -m src.build_dataset
 ├── tests/
-│   └── test_smoke.py           # quick sanity tests
-└── requirements.txt
+│   ├── test_smoke.py                 # ML pipeline sanity tests
+│   └── test_api.py                   # hits /feed, /upload, /reset against a test client
+└── requirements.txt                  # root: ML training/eval deps (torch, sklearn, etc.)
 ```
 
 ## Setup
@@ -64,18 +117,21 @@ pip install -r requirements.txt
 ## Quickstart
 
 1. **Download & prepare data** (Person 1 — data)
+
    ```bash
    python src/data/download.py --dataset all --out data/raw
    python src/data/near_duplicate_gen.py --input data/raw/ai --out data/near_duplicates
    ```
 
 2. **Train the classifier** (Person 2 — training)
+
    ```bash
    python src/models/train.py --config configs/config.yaml
    python src/models/train.py --config configs/config.yaml --experiment rotation_jitter
    ```
 
 3. **Evaluate robustness** (Person 4 — evaluation)
+
    ```bash
    python src/eval/robustness.py --checkpoint outputs/model_best.pt --out outputs/robustness_table.csv
    python src/eval/calibration.py --checkpoint outputs/model_best.pt
@@ -84,12 +140,20 @@ pip install -r requirements.txt
    ```
 
 4. **Run full inference (required deliverable format)**
+
    ```bash
    python src/inference.py --input_dir path/to/images --checkpoint outputs/model_best.pt --out outputs/predictions.json
    ```
+
    Produces JSON in the required format:
+
    ```json
-   {"image_path": "image_01.jpg", "pred": 0.91, "similarity_cluster": 4, "repetition_score": 0.94}
+   {
+     "image_path": "image_01.jpg",
+     "pred": 0.91,
+     "similarity_cluster": 4,
+     "repetition_score": 0.94
+   }
    ```
 
 5. **Launch the demo app** (Person 5 — product/demo)
@@ -106,13 +170,13 @@ writes its config + metrics to `outputs/<run_name>/`.
 
 ## Team ownership (see repo structure above for exact files)
 
-| Area | Owner | Folder |
-|---|---|---|
-| Data & robustness transforms | Vicky | `src/data/` |
-| Core model training | Glory | `src/models/` |
-| Similarity & clustering | Chelsea | `src/similarity/` |
-| Evaluation & calibration | Evan | `src/eval/` |
-| Demo app | Eron | `app/dashboard.py` |
+| Area                         | Owner   | Folder             |
+| ---------------------------- | ------- | ------------------ |
+| Data & robustness transforms | Vicky   | `src/data/`        |
+| Core model training          | Glory   | `src/models/`      |
+| Similarity & clustering      | Chelsea | `src/similarity/`  |
+| Evaluation & calibration     | Evan    | `src/eval/`        |
+| Demo app                     | Eron    | `app/dashboard.py` |
 
 ## Limitations & future work
 
