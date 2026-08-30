@@ -1,0 +1,28 @@
+{
+  "input_dir": "D:\\mosaic\\data\\raw\\wildfake",
+  "output_dir": "data\\processed\\wildfake",
+  "archives_requested": 5,
+  "image_members_discovered": 287559,
+  "rows_scanned": 287559,
+  "valid_images": 287559,
+  "included_images": 287559,
+  "rejected_images": 0,
+  "rejected_archives": 0,
+  "visual_hashes_enabled": false,
+  "max_per_source": 0,
+  "counts_by_split_and_label": {
+    "train/label_0": 136414,
+    "validation/label_0": 4435,
+    "test/label_0": 4436,
+    "train/label_1": 114036,
+    "test/label_1": 14076,
+    "validation/label_1": 14162
+  },
+  "counts_by_source": {
+    "wildfake_real_afhq": 31933,
+    "wildfake_real_celebahq": 30000,
+    "wildfake_real_church": 83352,
+    "wildfake_ddim": 65713,
+    "wildfake_ddpm": 76561
+  }
+}
