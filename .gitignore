@@ -27,6 +27,11 @@ outputs/*
 data/raw/**
 !data/raw/.gitkeep
 
+# WildFake is downloaded from ModelScope and remains local (raw images/shards).
+# Keep both spellings covered because the source/repository name is WildFake.
+data/raw/wildfake/**
+data/raw/WildFake/**
+
 # Commit only the approved cleaning handoff artifacts. The complete audit
 # manifests remain local because they are large and are not needed for training.
 data/processed/**
@@ -41,3 +46,8 @@ data/processed/**
 !data/processed/sid_set/cleaning_report.json
 !data/processed/sid_set/near_duplicate_review.csv
 !data/processed/sid_set/rejected.csv
+!data/processed/wildfake/
+!data/processed/wildfake/clean_manifest.csv
+!data/processed/wildfake/cleaning_report.json
+!data/processed/wildfake/near_duplicate_review.csv
+!data/processed/wildfake/rejected.csv
