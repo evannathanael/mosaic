@@ -21,7 +21,9 @@ class SharedBackbone(nn.Module):
         super().__init__()
         model_cfg = config["model"]
         model, _, preprocess = open_clip.create_model_and_transforms(
-            model_cfg["backbone"], pretrained=model_cfg["pretrained"]
+            model_cfg["backbone"],
+            pretrained=model_cfg["pretrained"],
+            force_quick_gelu=(model_cfg["pretrained"] == "openai"),
         )
         self.encoder = model.visual
         self.preprocess = preprocess  # exposed for reference; dataset.py does its own equivalent normalization

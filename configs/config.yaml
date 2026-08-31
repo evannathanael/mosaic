@@ -73,6 +73,9 @@ experiments:
       freeze_backbone: false
 
 similarity:
+  # Live CLIP upload embeddings are opt-in. Keep false on memory-constrained
+  # machines; exact SHA-256 clustering remains available as a safe fallback.
+  enabled: false
   threshold: 0.90
   clustering_method: "threshold"
   dbscan_eps: 0.15
@@ -105,6 +108,9 @@ evaluation:
 # a frozen CLIP backbone + the MLP head saved in `checkpoint`. `threshold` is the
 # P(AI) at/above which a post is labelled AI-generated.
 detector:
+  # Live ViT-L/14 inference is opt-in because it can exceed a laptop's virtual
+  # memory (Windows error 1455). Enable after configuring sufficient RAM/pagefile.
+  enabled: false
   checkpoint: "combined_head.pt"
   threshold: 0.5
   # Re-score the committed demo seed posts with the model at startup. Turn off to

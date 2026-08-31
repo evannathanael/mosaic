@@ -53,7 +53,9 @@ class AIGCClipDetector(nn.Module):
         super().__init__()
 
         clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
-            clip_model_name, pretrained=clip_pretrained
+            clip_model_name,
+            pretrained=clip_pretrained,
+            force_quick_gelu=(clip_pretrained == "openai"),
         )
         self.clip_model = clip_model
         self.clip_preprocess = clip_preprocess  # deterministic resize/crop/normalize for this backbone

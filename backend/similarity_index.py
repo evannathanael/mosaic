@@ -25,6 +25,22 @@ STATIC_DEMO_PREFIX = "/static/demo/"
 _THRESHOLD: float | None = None
 
 
+def _ml_enabled() -> bool:
+    """Whether live CLIP embedding is enabled for uploads.
+
+    Seed embeddings can still be loaded from the committed cache when this is
+    disabled. Keeping live inference opt-in prevents a memory-constrained demo
+    machine from attempting to allocate ViT-L/14 on every first upload.
+    """
+    try:
+        import yaml
+
+        cfg = yaml.safe_load((ROOT / "configs" / "config.yaml").read_text()) or {}
+        return bool(cfg.get("similarity", {}).get("enabled", False))
+    except Exception:
+        return False
+
+
 def _threshold() -> float:
     global _THRESHOLD
     if _THRESHOLD is None:
@@ -46,6 +62,8 @@ def _local_path(thumbnail_url: str) -> Path | None:
 
 def embed_image(image) -> list[float] | None:
     """Embed a PIL image via the shared CLIP backbone. None if ML deps/model unavailable."""
+    if not _ml_enabled():
+        return None
     try:
         from src.similarity.embed import embed_pil
 

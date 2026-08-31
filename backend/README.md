@@ -34,6 +34,13 @@ and files in Supabase Storage:
 4. Restart the backend. `GET /api/health` should report
    `"storage_mode": "supabase"`.
 
+The backend keeps live ViT-L/14 inference disabled by default on laptop-sized
+machines. In `configs/config.yaml`, set both `similarity.enabled` and
+`detector.enabled` to `true` only when the machine has enough RAM/pagefile and
+the compatible CLIP checkpoint is available. With them disabled, the service
+uses the safe exact-hash and filename-heuristic fallbacks without attempting a
+large model allocation.
+
 The secret key must stay on the backend and must never be placed in the
 frontend. Without these variables, the API continues to use local files and
 local metadata.

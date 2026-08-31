@@ -80,6 +80,9 @@ def _load_detector():
     if _MODEL_TRIED:
         return _MODEL
     _MODEL_TRIED = True
+    if not bool(_config().get("detector", {}).get("enabled", False)):
+        logger.info("Live detector disabled in configs/config.yaml; using fallback scoring.")
+        return None
     path = _checkpoint_path()
     try:
         import torch
