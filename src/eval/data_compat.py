@@ -30,6 +30,7 @@ Three mismatches this bridges:
 """
 import csv
 import io
+import random
 import zipfile
 from pathlib import Path
 
@@ -76,6 +77,27 @@ def scan_cifake_nested(cifake_root: Path) -> list[Sample]:
                     continue
                 samples.append(Sample(path=str(img_path), label=label, generator="cifake"))
     return samples
+
+
+def _cap_samples(samples: list[Sample], max_samples: int | None, seed: int) -> list[Sample]:
+    """Caps `samples` to at most `max_samples`, stratified by label so the
+    real/AI balance doesn't skew — a plain random subsample could otherwise
+    happen to keep mostly one class if a source is label-imbalanced. A no-op
+    if max_samples is None or samples is already within the cap.
+    """
+    if max_samples is None or len(samples) <= max_samples:
+        return samples
+    rng = random.Random(seed)
+    by_label: dict[int, list[Sample]] = {}
+    for s in samples:
+        by_label.setdefault(s.label, []).append(s)
+    per_label = max_samples // max(1, len(by_label))
+    capped: list[Sample] = []
+    for group in by_label.values():
+        rng.shuffle(group)
+        capped.extend(group[:per_label])
+    rng.shuffle(capped)
+    return capped
 
 
 def scan_sid_set_manifest(manifest_path: Path, raw_root: Path) -> list[Sample]:
@@ -159,14 +181,23 @@ def scan_all_sources(config: dict) -> list[Sample]:
     additionally tolerant of a *partial* download (see scan_sid_set_manifest/
     scan_wildfake_manifest) since both are too large to fit in full alongside
     everything else on a standard Colab disk.
+
+    Each source is also capped at config["evaluation"]["max_samples_per_source"]
+    (stratified by label, see _cap_samples) — WildFake's manifest alone can be
+    200K+ rows, and decoding that many images from ZIP archives is heavy
+    enough on a memory-constrained Colab instance to risk an OOM kill even
+    with data loading otherwise working correctly. Set that config value to
+    null to disable capping.
     """
     raw_dir = Path(config["data"]["raw_dir"])
     processed_dir = Path(config["data"]["processed_dir"])
+    max_per_source = config.get("evaluation", {}).get("max_samples_per_source")
+    seed = config["seed"]
     samples: list[Sample] = []
 
     cifake_root = raw_dir / "CIFAKE"
     if cifake_root.exists():
-        cifake_samples = scan_cifake_nested(cifake_root)
+        cifake_samples = _cap_samples(scan_cifake_nested(cifake_root), max_per_source, seed)
         logger.info("CIFAKE: %d samples", len(cifake_samples))
         samples.extend(cifake_samples)
     else:
@@ -174,7 +205,9 @@ def scan_all_sources(config: dict) -> list[Sample]:
 
     sid_set_manifest = processed_dir / "sid_set" / "clean_manifest.csv"
     if sid_set_manifest.exists():
-        sid_set_samples = scan_sid_set_manifest(sid_set_manifest, raw_dir / "sid_set")
+        sid_set_samples = _cap_samples(
+            scan_sid_set_manifest(sid_set_manifest, raw_dir / "sid_set"), max_per_source, seed
+        )
         logger.info("SID-Set: %d samples", len(sid_set_samples))
         samples.extend(sid_set_samples)
     else:
@@ -182,7 +215,9 @@ def scan_all_sources(config: dict) -> list[Sample]:
 
     wildfake_manifest = processed_dir / "wildfake" / "clean_manifest.csv"
     if wildfake_manifest.exists():
-        wildfake_samples = scan_wildfake_manifest(wildfake_manifest, raw_dir / "wildfake")
+        wildfake_samples = _cap_samples(
+            scan_wildfake_manifest(wildfake_manifest, raw_dir / "wildfake"), max_per_source, seed
+        )
         logger.info("WildFake: %d samples", len(wildfake_samples))
         samples.extend(wildfake_samples)
     else:
