@@ -18,7 +18,7 @@ from sklearn.cluster import DBSCAN
 from sklearn.metrics import precision_score, recall_score
 
 from src.models.backbone import SharedBackbone
-from src.similarity.embeddings import extract_embeddings, cosine_similarity_matrix
+from src.similarity.embed import extract_embeddings, cosine_similarity_matrix
 from src.utils import load_config, get_logger
 
 logger = get_logger(__name__)
@@ -38,6 +38,13 @@ class UnionFind:
         rx, ry = self.find(x), self.find(y)
         if rx != ry:
             self.parent[rx] = ry
+
+
+def cosine_similarity(embeddings: np.ndarray) -> np.ndarray:
+    """Pairwise cosine similarity matrix. embeddings must already be
+    L2-normalized (see embed.py's extract_embeddings/embed/embed_folder).
+    """
+    return cosine_similarity_matrix(embeddings)
 
 
 def cluster_threshold(embeddings: np.ndarray, threshold: float) -> np.ndarray:
@@ -67,14 +74,21 @@ def cluster_dbscan(embeddings: np.ndarray, eps: float, min_samples: int) -> np.n
     return out
 
 
-def compute_clusters(embeddings: np.ndarray, config: dict) -> np.ndarray:
+def cluster_images(embeddings: np.ndarray, config: dict) -> np.ndarray:
+    """Assigns each row of `embeddings` a cluster ID, using the method/params
+    from config["similarity"] ("threshold" or "dbscan").
+    """
     sim_cfg = config["similarity"]
     if sim_cfg["clustering_method"] == "dbscan":
         return cluster_dbscan(embeddings, sim_cfg["dbscan_eps"], sim_cfg["dbscan_min_samples"])
     return cluster_threshold(embeddings, sim_cfg["threshold"])
 
 
-def compute_repetition_scores(cluster_ids: np.ndarray) -> np.ndarray:
+# Backward-compatible alias.
+compute_clusters = cluster_images
+
+
+def repetition_score(cluster_ids: np.ndarray) -> np.ndarray:
     """repetition_score[i] = (size of i's cluster - 1) / total images.
     0.0 = fully unique image, higher = part of a larger repeated group.
     """
@@ -83,6 +97,10 @@ def compute_repetition_scores(cluster_ids: np.ndarray) -> np.ndarray:
     for c in cluster_ids:
         counts[c] = counts.get(c, 0) + 1
     return np.array([(counts[c] - 1) / n for c in cluster_ids])
+
+
+# Backward-compatible alias.
+compute_repetition_scores = repetition_score
 
 
 def evaluate_clustering(image_paths: list[str], cluster_ids: np.ndarray, manifest_path: str) -> dict:
@@ -129,8 +147,8 @@ def main():
 
     backbone = SharedBackbone(config)
     embeddings = extract_embeddings(image_paths, backbone, config, device=args.device)
-    cluster_ids = compute_clusters(embeddings, config)
-    repetition_scores = compute_repetition_scores(cluster_ids)
+    cluster_ids = cluster_images(embeddings, config)
+    repetition_scores = repetition_score(cluster_ids)
 
     logger.info("Found %d clusters across %d images", len(set(cluster_ids)), len(image_paths))
 

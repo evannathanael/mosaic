@@ -55,3 +55,5 @@ data/processed/**
 !data/processed/wildfake/cleaning_report.json
 !data/processed/wildfake/near_duplicate_review.csv
 !data/processed/wildfake/rejected.csv
+data/near_duplicates_hires/
+data/near_duplicates_sid/
