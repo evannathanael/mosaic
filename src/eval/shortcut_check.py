@@ -69,8 +69,8 @@ def run_shortcut_check(config: dict, checkpoint_path: str, device: str = "cpu"):
     )
     test_ds = EvalDataset(splits["test"], config, eval_transform_name="clean")
     loader = DataLoader(
-        test_ds, batch_size=config["training"]["batch_size"], shuffle=False,
-        num_workers=4, pin_memory=(device == "cuda"),
+        test_ds, batch_size=config["evaluation"].get("batch_size", config["training"]["batch_size"]), shuffle=False,
+        num_workers=0, pin_memory=(device == "cuda"),
     )
 
     probs, labels, paths, generators = [], [], [], []

@@ -38,8 +38,8 @@ CONDITIONS = [
 def evaluate_condition(model, samples, transform_name, config, device) -> dict:
     ds = EvalDataset(samples, config, eval_transform_name=transform_name)
     loader = DataLoader(
-        ds, batch_size=config["training"]["batch_size"], shuffle=False,
-        num_workers=4, pin_memory=(device == "cuda"),
+        ds, batch_size=config["evaluation"].get("batch_size", config["training"]["batch_size"]), shuffle=False,
+        num_workers=0, pin_memory=(device == "cuda"),
     )
 
     all_probs, all_labels = [], []

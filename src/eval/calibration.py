@@ -73,8 +73,8 @@ def main():
     )
     val_ds = EvalDataset(splits["val"], config, eval_transform_name="clean")
     val_loader = DataLoader(
-        val_ds, batch_size=config["training"]["batch_size"], shuffle=False,
-        num_workers=4, pin_memory=(args.device == "cuda"),
+        val_ds, batch_size=config["evaluation"].get("batch_size", config["training"]["batch_size"]), shuffle=False,
+        num_workers=0, pin_memory=(args.device == "cuda"),
     )
 
     temperature = fit_temperature(model, val_loader, args.device)
