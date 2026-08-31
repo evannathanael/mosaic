@@ -222,9 +222,9 @@ writes its config + metrics to `outputs/<run_name>/`.
 
 ## Limitations & future work
 
-- Parameter budget: shared CLIP ViT-B backbone (~150M params) + small classifier
-  head — well under the 2B limit even combined with the similarity component,
-  which reuses the same backbone at no extra parameter cost.
+- Parameter budget: shared CLIP ViT-L/14 backbone (~304M params) + small
+  classifier head — well under the 2B limit even combined with the similarity
+  component, which reuses the same backbone at no extra parameter cost.
 - Scope: image-level binary detection only, per the challenge — no video/audio,
   no production deployment, no pixel-level localization.
 - See `outputs/error_analysis.md` (generated after evaluation) for a discussion
