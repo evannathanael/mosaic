@@ -1,231 +1,181 @@
 # Mosaic
 
-A lightweight AI-generated image (AIGC) detector with a repetition/near-duplicate
-signal on top — built for TikTok TechJam's AIGC Detection track.
+Mosaic is an AI-generated image detection and feed-diversity system built for TikTok TechJam's AIGC Detection track. Most detectors ask only whether an image is synthetic. Mosaic also asks whether substantially the same synthetic image is being reposted often enough to crowd out other creators.
 
-**Core idea:** most projects ask _"is this image AI-generated?"_. Mosaic
-also asks _"is AI-generated content being reposted/repeated at a volume that
-crowds out other creators?"_ — so it can flag repetitive synthetic content for
-feed-balancing without penalizing one-off, legitimate AI creativity.
+The system combines two signals:
 
-Both signals share **one lightweight backbone** (CLIP ViT-L/14 by default), keeping
-the whole pipeline well under the 2B parameter limit.
+1. **AI-image probability** — a frozen CLIP ViT-L/14 image encoder and a trained MLP classification head estimate whether an image is AI-generated.
+2. **Repetition** — normalized CLIP embeddings and cosine-similarity clustering identify near-duplicate images and calculate a repetition score.
 
+```text
+Image -> shared CLIP encoder -> AI classifier -> AI probability
+                           \-> embedding -----> cluster + repetition score
 ```
-Image → [Shared Backbone] ──→ Classifier head ──→ AI probability + confidence
-                          └──→ Embedding ────────→ Cosine similarity → cluster + repetition score
-```
+
+The React frontend presents these signals in a vertical feed. It avoids placing near-duplicates back-to-back, shows why repeated synthetic posts were grouped, and lets a user upload an image for live analysis. The FastAPI backend serves the demo dataset, runs the detector, maintains similarity groups, and can optionally persist uploads to Supabase.
 
 ## Project structure
 
-```
-mosaic/
-├── configs/config.yaml            # all tunable settings in one place
-├── data/                          # datasets (gitignored except structure)
-│   ├── raw/                       # downloaded datasets go here
-│   ├── processed/                 # cleaned/split data
-│   ├── near_duplicates/           # generated near-duplicate test variants
-│   ├── demo_accounts/             # curated images for the two seed accounts
-│   │   ├── flood/                 # ~40 near-identical AI images, one handle
-│   │   └── creator/                # ~12 distinct AI images, one handle
-│   └── demo_seed.json             # pre-scored Post[] built from demo_accounts/,
-│                                    # loaded by the backend at startup
-├── src/
-│   ├── data/
-│   │   ├── download.py            # dataset download helpers
-│   │   ├── transforms.py          # the required robustness transforms
-│   │   ├── dataset.py             # PyTorch Dataset + train/val/test split logic
-│   │   └── near_duplicate_gen.py  # builds near-duplicate variant test set
-│   ├── models/
-│   │   ├── backbone.py            # shared CLIP backbone loader (frozen or fine-tune)
-│   │   ├── classifier.py          # classifier head on top of the backbone
-│   │   └── train.py               # main training loop -> writes models/detector.joblib
-│   ├── similarity/
-│   │   ├── embed.py           # extract embeddings from the shared backbone
-│   │   └── similarity.py      # cosine similarity + near-duplicate clustering
-│   ├── eval/
-│   │   ├── robustness.py          # clean vs. transformed vs. unseen-generator AUC table
-│   │   ├── calibration.py         # temperature scaling for calibrated confidence
-│   │   ├── error_analysis.py      # false positive / false negative report
-│   │   └── shortcut_check.py      # sanity check: is the model learning real signal?
-│   ├── inference.py                # shared inference fn: image -> (embedding, ai_prob,
-│   │                                # repetition_score, diversity_label) — imported by
-│   │                                # BOTH build_dataset.py and the live backend, so
-│   │                                # scoring logic exists in exactly one place
-│   ├── build_dataset.py            # batch entry point: data/demo_accounts/ ->
-│   │                                # data/demo_seed.json (run once before the demo)
-│   └── utils.py                     # shared helpers (seeding, config loading, logging)
-├── models/
-│   └── detector.joblib              # trained classifier head, loaded once by the backend
-│
-├── backend/                          # FastAPI — loads the model, serves the live app
-│   ├── server.py                     # app + lifespan (loads detector.joblib once, warms
-│   │                                  # CLIP, seeds STATE["feed"] from demo_seed.json)
-│   ├── routes/
-│   │   ├── feed.py                   # GET /feed
-│   │   ├── upload.py                 # POST /upload  (saves file, calls src/inference.py,
-│   │   │                             #  appends to in-memory feed, returns Post)
-│   │   └── admin.py                  # POST /reset  (wipes live uploads back to seed)
-│   ├── state.py                      # the in-memory STATE dict (feed list, embeddings list)
-│   ├── uploads/                      # gitignored — images saved from live /upload calls
-│   └── requirements.txt              # fastapi, uvicorn, joblib, pillow, open_clip, numpy
-│
-├── frontend/                         # React (Vite) — the feed UI
-│   ├── index.html
-│   ├── vite.config.ts
-│   ├── package.json
-│   ├── public/
-│   │   └── mock-thumbs/              # gradient/SVG placeholder thumbnails for mock mode
-│   └── src/
-│       ├── main.tsx
-│       ├── App.tsx                   # view switcher: Feed / Cluster sheet / Account compare
-│       ├── api.ts                    # USE_MOCK flag; GET /feed, POST /upload, POST /reset
-│       ├── mock/
-│       │   └── fixtures.ts           # mock Post[] matching the backend contract exactly
-│       ├── types.ts                  # shared Post / Cluster / AccountSummary types
-│       ├── components/
-│       │   ├── Feed.tsx              # scroll-snap vertical feed
-│       │   ├── PostCard.tsx          # single card: image, handle, diversity badge
-│       │   ├── UploadButton.tsx      # floating upload control, optimistic-append logic
-│       │   ├── ClusterSheet.tsx      # kept-vs-suppressed detail sheet
-│       │   └── AccountCompare.tsx    # flood vs. creator side-by-side view
-│       ├── styles/
-│       │   ├── tokens.css            # color tokens, type scale from the design system
-│       │   └── feed.css              # scroll-snap rules
-│       └── hooks/
-│           └── useAbortableUpload.ts # AbortController wrapper for the live upload call
-│
-├── scripts/
-│   ├── run_backend.sh                # uvicorn backend.server:app --port 8000
-│   ├── run_frontend.sh               # cd frontend && npm run dev
-│   ├── run_demo.sh                   # runs both, for a one-command local demo start
-│   └── build_seed.sh                 # thin wrapper: python -m src.build_dataset
-├── tests/
-│   ├── test_smoke.py                 # ML pipeline sanity tests
-│   └── test_api.py                   # hits /feed, /upload, /reset against a test client
-└── requirements.txt                  # root: ML training/eval deps (torch, sklearn, etc.)
+```text
+backend/                 FastAPI API, detector integration, uploads, persistence
+configs/config.yaml      Reproducible model, training, and clustering settings
+data/                    Raw/processed dataset metadata and committed demo images
+frontend/                React, TypeScript, and Vite user interface
+scripts/                 Training, evaluation, inference, and demo-data helpers
+src/data/                Dataset download, cleaning, splitting, and transforms
+src/models/              CLIP backbone, classifier heads, and training code
+src/similarity/          Embedding, clustering, and threshold evaluation
+src/eval/                Robustness, calibration, error, and shortcut checks
+tests/                   Data, detector, similarity, and API tests
+combined_head.pt         Detector head used by the local FastAPI demo
 ```
 
-## Setup
+## Setup and installation
+
+### Prerequisites
+
+- Python 3.10 or newer
+- Node.js 18 or newer and npm
+- Git
+
+A GPU is optional. The application falls back to CPU, although model loading and inference will be slower.
+
+### 1. Clone and create a Python environment
 
 ```bash
-python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+git clone https://github.com/evannathanael/mosaic.git
+cd mosaic
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r backend/requirements.txt
 ```
 
-## Quickstart
+Install the root requirements as well if you intend to train or run the full offline evaluation pipeline:
 
-1. **Download & prepare data** (Person 1 — data)
+```bash
+python -m pip install -r requirements.txt
+```
 
-   ```bash
-   python src/data/download.py --dataset all --out data/raw
-   python src/data/near_duplicate_gen.py --input data/raw/ai --out data/near_duplicates
-   ```
+### 2. Install the frontend
 
-2. **Train the classifier** (Person 2 — training)
+```bash
+cd frontend
+npm install
+cd ..
+```
 
-   ```bash
-   python src/models/train.py --config configs/config.yaml
-   python src/models/train.py --config configs/config.yaml --experiment rotation_jitter
-   ```
+### 3. Start the backend
 
-3. **Evaluate robustness** (Person 4 — evaluation)
+From the repository root, with the virtual environment active:
 
-   ```bash
-   python src/eval/robustness.py --checkpoint outputs/model_best.pt --out outputs/robustness_table.csv
-   python src/eval/calibration.py --checkpoint outputs/model_best.pt
-   python src/eval/error_analysis.py --checkpoint outputs/model_best.pt --out outputs/error_analysis.md
-   python src/eval/shortcut_check.py --checkpoint outputs/model_best.pt
-   ```
+```bash
+python -m uvicorn backend.server:app --host 127.0.0.1 --port 8000 --reload
+```
 
-4. **Run full inference (required deliverable format)**
+Check that the trained model loaded:
 
-   ```bash
-   python src/inference.py --input_dir path/to/images --checkpoint outputs/model_best.pt --out outputs/predictions.json
-   ```
+```bash
+curl http://127.0.0.1:8000/api/health
+```
 
-   Produces JSON in the required format:
+A working detector reports `"model_ready": true` and `"analysis_mode": "model"`. If it reports `false` and `"mock"`, the API still runs but uploaded images use a filename heuristic rather than the trained detector. The API documentation is available at <http://127.0.0.1:8000/docs>.
 
-   ```json
-   {
-     "image_path": "image_01.jpg",
-     "pred": 0.91,
-     "similarity_cluster": 4,
-     "repetition_score": 0.94
-   }
-   ```
+### 4. Start the frontend
 
-5. **Launch the demo app** (Person 5 — product/demo)
-   ```bash
-   streamlit run app/dashboard.py
-   ```
+In a second terminal:
 
-## Similarity / near-duplicate clustering module (`src/similarity/`)
+```bash
+cd frontend
+npm run dev
+```
 
-Owned by Chelsea (Person 3). Given a folder of images, this module extracts
-embeddings from the shared frozen CLIP backbone, clusters near-duplicates by
-cosine similarity, and computes a per-image repetition score. No training —
-inference and clustering only.
+Open <http://127.0.0.1:5173>. The frontend is currently configured to call the backend at `http://localhost:8000`. Press `Shift+R` in the app to reset the demo feed.
 
-**Inputs:** a folder path (or list of image paths) plus `configs/config.yaml`
-(backbone choice, DBSCAN/threshold params).
+Supabase is not required. Without Supabase environment variables, uploads and metadata remain local. See [backend/README.md](backend/README.md) for optional Supabase setup.
 
-**Outputs (per image):**
+## Reproducing the results
 
-- `similarity_cluster` — integer cluster ID (images in the same cluster are
-  near-duplicates)
-- `repetition_score` — `(cluster size - 1) / total images in the folder`,
-  i.e. how much of the corpus is made up of near-duplicates of this image
-  (`0.0` = unique, higher = part of a larger repeated group)
+All shared settings and the random seed are stored in [`configs/config.yaml`](configs/config.yaml). The configured seed is `42`, the data split is 80% training / 10% validation / 10% test, and the default similarity threshold is `0.90`.
 
-**Files:**
+### Reproduce the committed detector experiment
 
-- `embed.py` — `embed(image_path)` embeds a single image to a 768-dim
-  L2-normalized vector (CLIP ViT-L/14); `embed_folder(folder_path)` returns
-  `{path: embedding}` for every image in a folder. Preprocessing uses
-  open_clip's own default transform for the configured backbone (not a
-  hand-rolled resize/normalize), since the backbone is frozen and never
-  fine-tuned here.
-- `similarity.py` — `cosine_similarity(embeddings)` for the pairwise
-  similarity matrix; `cluster_images(embeddings, config)` clusters via DBSCAN
-  (cosine distance) or a simpler union-find threshold method, selected by
-  `similarity.clustering_method` in `configs/config.yaml`; `repetition_score(cluster_ids)`
-  computes the per-image score above.
+The current CLIP-head experiment is implemented in `src/models/train_clip_head.py`. Select `cifake`, `sid_set`, `wildfake`, or `combined` using its documented `DATASET` setting. Dataset-specific preparation instructions are in [data/README.md](data/README.md); CIFAKE can be downloaded by the helper, while SID-Set and WildFake require the source files described there.
 
-**Known placeholder:** `similarity.dbscan_eps` in `configs/config.yaml` is
-**not yet tuned** — there's no near-duplicate ground truth set available yet.
-Once `src/data/near_duplicate_gen.py`'s manifest exists, run
-`evaluate_clustering()` in `similarity.py` to pick `eps` by pairwise
-precision/recall against ground truth.
+```bash
+# Download supported data and create the cleaned manifests.
+python src/data/download.py --dataset cifake --out data/raw
+python src/data/clean_cifake.py
 
-**Tests:** `tests/test_similarity.py` uses synthetic embeddings (no real
-images or network calls) to verify near-duplicate vectors cluster together
-and unrelated vectors don't.
+# Train and evaluate the selected frozen-CLIP classifier head.
+python -m src.models.train_clip_head
+```
 
-## Reproducing results
+For the committed CIFAKE run, the repository includes `outputs/cifake_head.pt` and `outputs/cifake_clip_robustness_table.csv`. That run used 200 training and 200 evaluation images per class and produced:
 
-All experiment settings (backbone choice, augmentation strength, learning rate,
-etc.) live in `configs/config.yaml` — change settings there rather than editing
-code, so every run is reproducible from a single config file. Each training run
-writes its config + metrics to `outputs/<run_name>/`.
+| Condition | Images | Accuracy |
+| --- | ---: | ---: |
+| Clean | 400 | 80.50% |
+| JPEG recompression | 400 | 66.25% |
+| Gaussian blur | 400 | 70.75% |
+| Random resized crop | 400 | 66.75% |
+| Downscale then upscale | 400 | 67.25% |
+| Color jitter | 400 | 76.00% |
 
-## Team ownership (see repo structure above for exact files)
+These are small-subset experiment results, not a claim of production-level or cross-dataset accuracy.
 
-| Area                         | Owner   | Folder             |
-| ---------------------------- | ------- | ------------------ |
-| Data & robustness transforms | Vicky   | `src/data/`        |
-| Core model training          | Glory   | `src/models/`      |
-| Similarity & clustering      | Chelsea | `src/similarity/`  |
-| Evaluation & calibration     | Evan    | `src/eval/`        |
-| Demo app                     | Eron    | `app/dashboard.py` |
+### Reproduce the configurable end-to-end pipeline
 
-## Limitations & future work
+The earlier configurable pipeline can be run through the provided scripts:
 
-- Parameter budget: shared CLIP ViT-L/14 backbone (~304M params) + small
-  classifier head — well under the 2B limit even combined with the similarity
-  component, which reuses the same backbone at no extra parameter cost.
-- Scope: image-level binary detection only, per the challenge — no video/audio,
-  no production deployment, no pixel-level localization.
-- See `outputs/error_analysis.md` (generated after evaluation) for a discussion
-  of known failure modes and what we'd improve with more time.
+```bash
+# Train the baseline or a named experiment from configs/config.yaml.
+./scripts/train.sh baseline
+# Alternatives: rotation_jitter or finetune_backbone
+
+# Reproduce calibration, robustness, error-analysis, and shortcut checks.
+./scripts/evaluate.sh outputs/baseline/model_best.pt
+
+# Produce AI probabilities, similarity clusters, and repetition scores.
+./scripts/run_inference.sh path/to/images outputs/baseline/model_best.pt
+```
+
+Inference writes `outputs/predictions.json` with one record per image:
+
+```json
+{
+  "image_path": "image_01.jpg",
+  "pred": 0.91,
+  "similarity_cluster": 4,
+  "repetition_score": 0.94
+}
+```
+
+Run the automated checks with:
+
+```bash
+python -m pytest -q
+cd frontend && npm run build
+```
+
+## Limitations and future improvements
+
+- **Limited evaluation scale.** The committed robustness table uses a balanced 400-image evaluation subset. With more time, we would train and evaluate on the full CIFAKE, SID-Set, and WildFake datasets and publish per-source ROC-AUC, precision, recall, calibration error, and confidence intervals.
+- **Domain shift.** A detector trained on known generators may perform poorly on unseen models, edited images, screenshots, or platform recompression. We would add newer generators, adversarial transformations, and a strictly held-out generator benchmark.
+- **Robustness degradation.** Accuracy falls under JPEG compression, cropping, and resizing. We would tune augmentation using a larger validation set and test fine-tuning part of the CLIP backbone instead of training only the head.
+- **Similarity threshold.** The global cosine threshold (`0.90`) is a practical demo setting and may merge visually similar originals or miss heavily edited copies. We would calibrate it on human-labelled duplicate pairs and consider perceptual hashing or a learned similarity model.
+- **Cached augmentation trade-off.** Frozen CLIP embeddings make training fast, but each image receives only one sampled augmentation per run. We would cache multiple augmented views or fine-tune end-to-end when compute permits.
+- **Demo-scale infrastructure.** Local state is in memory and single-process; resets and restarts discard local metadata. Production use would require authenticated durable storage, background inference, moderation safeguards, monitoring, and privacy/retention controls.
+- **Interpretability and fairness.** A probability is not proof that an image is synthetic. We would add uncertainty-aware review flows and audit false positives across image styles, cultures, compression levels, and creator communities before using the score for ranking decisions.
+
+## Team contributions
+
+| Team member | Primary contribution |
+| --- | --- |
+| Vicky | Data acquisition and cleaning, dataset manifests, robustness transforms |
+| Glory | Core model architecture, classifier training, and model integration |
+| Chelsea | CLIP embeddings, near-duplicate clustering, repetition scoring, and similarity evaluation |
+| Evan | Evaluation, calibration, robustness analysis, and error/shortcut analysis |
+| Eron | Product demo, frontend experience, and application integration |
+
+The components were integrated through a shared inference contract so AI classification and repetition analysis can reuse the same visual backbone.
