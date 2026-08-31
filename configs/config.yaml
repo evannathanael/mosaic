@@ -43,6 +43,8 @@ model:
   backbone: "ViT-B-32"          # open_clip model name
   pretrained: "openai"          # pretrained weight tag
   freeze_backbone: true         # set false to fine-tune the backbone too
+  unfreeze_last_n_blocks: 2     # only used when freeze_backbone: false — 0 means fine-tune the whole backbone;
+                                 # >0 keeps everything but the last N transformer blocks (+ ln_post/proj) frozen
   embedding_dim: 512            # must match the chosen backbone's output dim
   classifier_hidden_dim: 128
   dropout: 0.2
@@ -51,10 +53,12 @@ training:
   batch_size: 64
   epochs: 15
   learning_rate: 0.0003
+  backbone_learning_rate: 0.00001  # used only for unfrozen backbone params (finetune_backbone) — much
+                                    # smaller than the head's LR so pretrained CLIP weights don't blow up
   weight_decay: 0.0001
   optimizer: "adamw"
   scheduler: "cosine"
-  early_stopping_patience: 3
+  early_stopping_patience: 6
   device: "cuda"                 # falls back to cpu automatically if unavailable
 
 # Named training-run variants for Person B's parallel experiments.
@@ -71,6 +75,7 @@ experiments:
   finetune_backbone:
     model:
       freeze_backbone: false
+      unfreeze_last_n_blocks: 2
 
 similarity:
   threshold: 0.85                # cosine similarity threshold for "same cluster"
