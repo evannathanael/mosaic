@@ -84,6 +84,21 @@ def embed(image_path: str, device: str = "cpu") -> np.ndarray:
     return extract_embeddings([image_path], backbone, config, device=device)[0]
 
 
+def embed_pil(image: Image.Image, device: str = "cpu") -> np.ndarray:
+    """Embed an already-loaded PIL image -> L2-normalized (embedding_dim,) vector.
+
+    Same pipeline as embed(), but takes bytes/PIL directly so callers (e.g. the
+    upload endpoint) don't need to write a temp file.
+    """
+    backbone, _ = _get_default_backbone(device)
+    backbone.eval().to(device)
+    tensor = backbone.preprocess(image.convert("RGB")).unsqueeze(0).to(device)
+    with torch.no_grad():
+        emb = backbone(tensor).cpu().numpy()[0]
+    norm = np.linalg.norm(emb)
+    return emb / (norm if norm > 0 else 1e-8)
+
+
 def embed_folder(folder_path: str, device: str = "cpu", batch_size: int = 32) -> dict[str, np.ndarray]:
     """Embed every image in a folder -> {image_path: L2-normalized embedding}."""
     backbone, config = _get_default_backbone(device)

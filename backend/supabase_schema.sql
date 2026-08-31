@@ -10,6 +10,8 @@ create table if not exists public.posts (
     confidence double precision not null check (confidence between 0 and 1),
     robustness jsonb not null default '{}'::jsonb,
     similarity_cluster integer not null,
+    similarity_score double precision not null default 0,  -- max cosine sim to a cluster sibling
+    embedding jsonb,  -- 768-d L2-normalized CLIP vector (near-duplicate detection)
     repetition_score double precision not null check (repetition_score between 0 and 1),
     diversity_label text not null,
     created_at timestamptz not null,

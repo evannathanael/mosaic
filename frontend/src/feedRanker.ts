@@ -26,12 +26,26 @@ export interface RankWeights {
   dupInWindow: number
   /** Same author (different image) as a recent post. */
   sameAuthor: number
-  /** Demotion scaled by ai_probability. */
+  /** Gentle continuous demotion scaled by ai_probability (the label terms below
+   *  carry most of the ordering now). */
   aiPenalty: number
   /** Demotion scaled by the post's own repetition_score. */
   repetitionPenalty: number
-  /** Bonus for a genuinely non-AI post. */
+  /** Desirability by diversity_label — the feed leans
+   *  original ≳ unique_ai ≫ repeated_synthetic. */
   originalBonus: number
+  distinctAiBonus: number
+  repeatedSyntheticPenalty: number
+  /** Fraction of the fair-share "this cluster is overdue" pull that still applies
+   *  to repeated_synthetic posts (< 1 ⇒ AI-repeats resurface less often). */
+  repeatedSpacingDamp: number
+  /** Anti-clumping: per-post demotion for each consecutive post at the tail with
+   *  the *same diversity_label*. Breaks up long single-label blocks; jitter makes
+   *  the break length vary. original and unique_ai don't suppress each other. */
+  categoryRun: number
+  /** Extra demotion when the current post is AI-repeated and so is the candidate
+   *  (different cluster) — don't hop from one AI-repeat flood straight to another. */
+  aiRepeatChain: number
   /** Weight on the "this cluster is behind its fair share" term. */
   spacingWeight: number
   spacingCap: number
@@ -45,12 +59,17 @@ export const DEFAULT_WEIGHTS: RankWeights = {
   dupVsCurrent: 4,
   dupInWindow: 1,
   sameAuthor: 0.5,
-  aiPenalty: 0.6,
+  aiPenalty: 0.25,
   repetitionPenalty: 0.35,
-  originalBonus: 0.3,
+  originalBonus: 0.7,
+  distinctAiBonus: 0.25,
+  repeatedSyntheticPenalty: 0.8,
+  repeatedSpacingDamp: 0.45,
+  categoryRun: 0.4,
+  aiRepeatChain: 1.5,
   spacingWeight: 1.6,
   spacingCap: 3,
-  jitter: 0.12,
+  jitter: 0.35,
   window: 4,
   decay: 0.5,
 }
@@ -65,14 +84,42 @@ function scoreCandidate(
 ): number {
   let score = 0
 
-  // Rule 2 — prioritise non-AI (soft, never a filter).
+  // Rule 2 — lean the feed toward original ≳ unique_ai ≫ repeated_synthetic.
   score -= w.aiPenalty * post.ai_probability
   score -= w.repetitionPenalty * post.repetition_score
-  if (post.diversity_label === 'original') score += w.originalBonus
+  score +=
+    post.diversity_label === 'original'
+      ? w.originalBonus
+      : post.diversity_label === 'unique_ai'
+        ? w.distinctAiBonus
+        : -w.repeatedSyntheticPenalty
 
   // Rule 1 — not a duplicate of the current (and recent) post(s).
   const key = getClusterKey(post)
   const recent = placed.slice(-w.window)
+
+  // Anti-clumping — per-post demotion for each consecutive post at the tail with
+  // the same diversity_label. Breaks up long single-label blocks; jitter varies
+  // the break length. original/unique_ai are different labels so they interleave
+  // freely rather than being forced 1:1 against AI.
+  let labelRunLen = 0
+  for (let i = placed.length - 1; i >= 0; i--) {
+    if (placed[i].diversity_label !== post.diversity_label) break
+    labelRunLen++
+  }
+  score -= w.categoryRun * labelRunLen
+
+  // When the current post is an AI near-dup repeat, steer away from another
+  // AI-repeat cluster as the next photo (same-cluster is already covered below).
+  const current = placed[placed.length - 1]
+  if (
+    current?.diversity_label === 'repeated_synthetic' &&
+    post.diversity_label === 'repeated_synthetic' &&
+    getClusterKey(current) !== key
+  ) {
+    score -= w.aiRepeatChain
+  }
+
   for (let i = 0; i < recent.length; i++) {
     const prev = recent[recent.length - 1 - i] // i = 0 is the current post
     if (getClusterKey(prev) === key) {
@@ -88,54 +135,75 @@ function scoreCandidate(
   const deficit = expected - shownCount
   // Asymmetric: being overdue pulls hard; being recently-shown only lightly
   // demotes (so a big cluster recovers quickly and keeps threading through).
-  score += w.spacingWeight * Math.max(-1, Math.min(w.spacingCap, deficit))
+  // The overdue pull is damped for AI-repeats so they resurface less often.
+  const spacing = w.spacingWeight * Math.max(-1, Math.min(w.spacingCap, deficit))
+  score +=
+    deficit > 0 && post.diversity_label === 'repeated_synthetic'
+      ? spacing * w.repeatedSpacingDamp
+      : spacing
 
   score += Math.random() * w.jitter
   return score
 }
 
-export function rankFeed(posts: Post[], weights: Partial<RankWeights> = {}): Post[] {
+/**
+ * Given the posts already placed and a pool of candidates, return the index in
+ * `pool` of the best "next" post. Cluster totals / fair-share are computed over
+ * `placed ∪ pool`, so this works both for the one-shot `rankFeed` loop and for
+ * revealing more posts incrementally as the user scrolls.
+ */
+export function pickNext(
+  placed: Post[],
+  pool: Post[],
+  weights: Partial<RankWeights> = {},
+): number {
   const w = { ...DEFAULT_WEIGHTS, ...weights }
-  if (posts.length <= 1) return posts.map((p) => ({ ...p }))
+  const poolSize = placed.length + pool.length
 
-  const poolSize = posts.length
   const clusterTotal = new Map<string, number>()
-  for (const p of posts) {
+  for (const p of [...placed, ...pool]) {
     const k = getClusterKey(p)
     clusterTotal.set(k, (clusterTotal.get(k) ?? 0) + 1)
   }
+  const shown = new Map<string, number>()
+  for (const p of placed) {
+    const k = getClusterKey(p)
+    shown.set(k, (shown.get(k) ?? 0) + 1)
+  }
+
+  let bestIdx = 0
+  let bestScore = -Infinity
+  for (let i = 0; i < pool.length; i++) {
+    const key = getClusterKey(pool[i])
+    const s = scoreCandidate(
+      pool[i],
+      placed,
+      poolSize,
+      clusterTotal.get(key) ?? 1,
+      shown.get(key) ?? 0,
+      w,
+    )
+    if (s > bestScore) {
+      bestScore = s
+      bestIdx = i
+    }
+  }
+  return bestIdx
+}
+
+export function rankFeed(posts: Post[], weights: Partial<RankWeights> = {}): Post[] {
+  if (posts.length <= 1) return posts.map((p) => ({ ...p }))
 
   const remaining = [...posts]
   const ordered: Post[] = []
-  const shown = new Map<string, number>()
 
   // First post: random.
   const [opener] = remaining.splice(Math.floor(Math.random() * remaining.length), 1)
   ordered.push({ ...opener })
-  shown.set(getClusterKey(opener), 1)
 
   while (remaining.length) {
-    let bestIdx = 0
-    let bestScore = -Infinity
-    for (let i = 0; i < remaining.length; i++) {
-      const cand = remaining[i]
-      const key = getClusterKey(cand)
-      const s = scoreCandidate(
-        cand,
-        ordered,
-        poolSize,
-        clusterTotal.get(key) ?? 1,
-        shown.get(key) ?? 0,
-        w,
-      )
-      if (s > bestScore) {
-        bestScore = s
-        bestIdx = i
-      }
-    }
-    const [picked] = remaining.splice(bestIdx, 1)
-    const key = getClusterKey(picked)
-    shown.set(key, (shown.get(key) ?? 0) + 1)
+    const idx = pickNext(ordered, remaining, weights)
+    const [picked] = remaining.splice(idx, 1)
     ordered.push({ ...picked })
   }
 

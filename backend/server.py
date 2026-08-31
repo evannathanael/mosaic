@@ -10,8 +10,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.demo import DATASET_DIR, load_seed_posts
+from backend.detector import detector_ready
 from backend.routes import admin, feed, upload
-from backend.state import initialize, storage_mode
+from backend.similarity_index import attach_seed_embeddings
+from backend.state import all_posts, initialize, storage_mode
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +24,8 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     initialize(load_seed_posts())
+    attach_seed_embeddings(all_posts())
+    upload.apply_seed_scores_and_labels()
     yield
 
 
@@ -45,7 +49,7 @@ app.mount("/static/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploa
 def health() -> dict[str, bool | str]:
     return {
         "status": "ok",
-        "model_ready": False,
-        "analysis_mode": "mock",
+        "model_ready": detector_ready(),
+        "analysis_mode": "model" if detector_ready() else "mock",
         "storage_mode": storage_mode(),
     }

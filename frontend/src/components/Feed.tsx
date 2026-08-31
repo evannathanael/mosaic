@@ -3,6 +3,7 @@ import type { Post, ClusterOrigin } from '../types'
 import { PostCard } from './PostCard'
 import { SkeletonFeed } from './SkeletonFeed'
 import { getClusterKey } from '../theme'
+import { useVisibleIndex } from '../hooks/useVisibleIndex'
 
 interface Props {
   posts: Post[]
@@ -11,6 +12,7 @@ interface Props {
   similarCounts: Map<string, number>
   onOpenCluster: (post: Post, origin: ClusterOrigin) => void
   onRetry: (clientId: string) => void
+  onVisibleIndex?: (index: number) => void
 }
 
 /** ArrowUp / ArrowDown move exactly one slide. Scroll-snap handles the rest. */
@@ -44,8 +46,9 @@ function useSlideKeys(feedRef: RefObject<HTMLDivElement>) {
   }, [feedRef])
 }
 
-export function Feed({ posts, loading, feedRef, similarCounts, onOpenCluster, onRetry }: Props) {
+export function Feed({ posts, loading, feedRef, similarCounts, onOpenCluster, onRetry, onVisibleIndex }: Props) {
   useSlideKeys(feedRef)
+  useVisibleIndex(feedRef, onVisibleIndex, !loading && posts.length > 0)
 
   if (loading) return <SkeletonFeed />
 
@@ -63,7 +66,7 @@ export function Feed({ posts, loading, feedRef, similarCounts, onOpenCluster, on
             <div className="slide" key={post.clientId ?? post.image_id}>
               <PostCard
                 post={post}
-                similarCount={similarCounts.get(getClusterKey(post)) ?? 0}
+                similarCount={post.cluster_size ?? similarCounts.get(getClusterKey(post)) ?? 0}
                 onOpenCluster={onOpenCluster}
                 onRetry={onRetry}
               />

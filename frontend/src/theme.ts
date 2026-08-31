@@ -31,8 +31,12 @@ export function getLabelCopy(label: DiversityLabel): string {
   return LABEL_COPY[label]
 }
 
-/** Cluster key: repeated posts share their handle; distinct posts stand alone. */
+/**
+ * Cluster key: the similarity engine's near-duplicate group when we have it,
+ * otherwise fall back to the flood-handle / stand-alone heuristic (mock data).
+ */
 export function getClusterKey(post: Post): string {
+  if (post.similarity_cluster != null) return `sim:${post.similarity_cluster}`
   if (post.diversity_label === 'repeated_synthetic') return `flood:${post.handle}`
   return `solo:${post.image_id}`
 }

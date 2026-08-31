@@ -37,6 +37,7 @@ const flood: Post[] = Array.from({ length: FLOOD_WARMUP + FLOOD_REPEATED }, (_, 
       ? 0.16 + Math.random() * 0.1
       : Math.min(0.97, 0.5 + (i - FLOOD_WARMUP) / FLOOD_REPEATED * 0.45 + Math.random() * 0.04),
     diversity_label: warmup ? 'unique_ai' : 'repeated_synthetic',
+    similarity_cluster: warmup ? 100 + i : 200,
     uploaded_at: Math.floor(t),
   }
 })
@@ -54,6 +55,7 @@ const creator: Post[] = Array.from({ length: CREATOR_COUNT }, (_, i) => {
     ai_probability: isAI ? 0.55 + Math.random() * 0.28 : 0.04 + Math.random() * 0.08,
     repetition_score: 0.05 + Math.random() * 0.09, // flat, low
     diversity_label: isAI ? 'unique_ai' : 'original',
+    similarity_cluster: 300 + i,
     uploaded_at: Math.floor(t),
   }
 })

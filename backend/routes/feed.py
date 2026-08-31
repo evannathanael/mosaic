@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
@@ -32,7 +32,11 @@ def _uploaded_at(post: dict) -> int:
         return int(datetime.now(timezone.utc).timestamp())
 
 
-def _feed_post(post: dict) -> dict:
+def _cluster_size(cluster_id: int) -> int:
+    return sum(1 for post in all_posts() if post["similarity_cluster"] == cluster_id)
+
+
+def _feed_post(post: dict, cluster_size: int | None = None) -> dict:
     return {
         "image_id": post["image_id"],
         "thumbnail_url": post["thumbnail_url"],
@@ -40,6 +44,9 @@ def _feed_post(post: dict) -> dict:
         "ai_probability": post["ai_probability"],
         "repetition_score": post["repetition_score"],
         "diversity_label": post["diversity_label"],
+        "similarity_cluster": post["similarity_cluster"],
+        "cluster_size": cluster_size if cluster_size is not None else _cluster_size(post["similarity_cluster"]),
+        "similarity_score": round(float(post.get("similarity_score") or 0.0), 4),
         "uploaded_at": _uploaded_at(post),
     }
 
@@ -47,7 +54,9 @@ def _feed_post(post: dict) -> dict:
 @router.get("/api/feed", response_model=list[FeedPost])
 @router.get("/feed", response_model=list[FeedPost])
 def feed() -> list[dict]:
-    return [_feed_post(post) for post in all_posts()]
+    posts = all_posts()
+    sizes = Counter(post["similarity_cluster"] for post in posts)
+    return [_feed_post(post, sizes[post["similarity_cluster"]]) for post in posts]
 
 
 @router.get("/api/clusters", response_model=list[Cluster])
@@ -61,7 +70,9 @@ def clusters() -> list[dict]:
             "representative_image_id": members[0]["image_id"],
             "count": len(members),
             "image_ids": [member["image_id"] for member in members],
-            "average_similarity": 1.0,
+            "average_similarity": round(
+                sum(float(m.get("similarity_score") or 0.0) for m in members) / len(members), 4
+            ) if members else 0.0,
         }
         for cluster_id, members in sorted(grouped.items())
     ]
@@ -73,7 +84,7 @@ def cluster_detail(cluster_id: int) -> dict:
     members = [post for post in all_posts() if post["similarity_cluster"] == cluster_id]
     if not members:
         raise HTTPException(status_code=404, detail="Cluster not found")
-    public_members = [_feed_post(post) for post in members]
+    public_members = [_feed_post(post, len(members)) for post in members]
     kept = public_members[0]["image_id"]
     return {
         "cluster_id": cluster_id,

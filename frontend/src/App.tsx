@@ -121,6 +121,7 @@ export function App() {
         similarCounts={similarCounts}
         onOpenCluster={openCluster}
         onRetry={handleRetry}
+        onVisibleIndex={feed.revealNext}
       />
 
       <div className="nav-pill glass" aria-hidden="true">
