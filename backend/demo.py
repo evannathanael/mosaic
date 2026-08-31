@@ -25,7 +25,26 @@ NEAR_DUPE_CLUSTER_OFFSET = 1000
 # image_id -> (P(AI), label). Applied last by backend.detector.attach_seed_scores,
 # after the cached model scores. Empty by default — pin an entry only when a
 # specific curated demo image is visibly mislabelled in the feed.
-SEED_LABEL_OVERRIDES: dict[str, tuple[float, str]] = {}
+#
+# Populated here: combined_head.pt (CIFAKE + SID-Set + WildFake) scores these
+# 10 curated demo photos near chance (AUC 0.58 on the full REAL/FAKE set) —
+# they're outside all three training distributions. Left uncorrected, a bad
+# cached score doesn't just mislabel the fixture itself: backend/routes/upload.py
+# has any *new* upload that clusters near an existing post (by CLIP similarity)
+# inherit that post's ai_probability, so a real user photo landing near one of
+# these mis-scored REAL images would silently inherit its wrong ~1.0 score.
+SEED_LABEL_OVERRIDES: dict[str, tuple[float, str]] = {
+    "demo_creator_real_1": (0.08, "original"),   # real (1).jpg  — was 0.999
+    "demo_creator_real_2": (0.08, "original"),   # real (10).jpeg — was 0.856
+    "demo_creator_real_4": (0.08, "original"),   # real (3).jpg  — was 1.000
+    "demo_creator_real_6": (0.08, "original"),   # real (5).jpg  — was 0.992
+    "demo_creator_real_7": (0.08, "original"),   # real (6).jpeg — was 0.949
+    "demo_creator_real_9": (0.08, "original"),   # real (8).jpeg — was 0.998
+    "demo_creator_real_10": (0.08, "original"),  # real (9).jpg  — was 1.000
+    "demo_ai_2": (0.94, "unique_ai"),            # ai (10).png — was 0.043
+    "demo_ai_7": (0.94, "repeated_synthetic"),   # ai (5).png  — was 0.014
+    "demo_ai_8": (0.94, "repeated_synthetic"),   # ai (6).png  — was 0.072
+}
 
 
 def _base_post(image_id: str, account_id: str, handle: str, url: str, probability: float,

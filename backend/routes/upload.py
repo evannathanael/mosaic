@@ -46,11 +46,16 @@ def _validate_and_thumbnail(data: bytes) -> tuple[Image.Image, str, int, int]:
 
 
 def _fallback_probability(filename: str) -> float:
-    """Filename heuristic used only when the trained detector is unavailable."""
+    """Filename heuristic used only when the trained detector is unavailable.
+
+    Default case must land strictly below ai_threshold() (0.5 by default) —
+    label_for() uses >=, so a default of exactly 0.50 flagged every generic
+    upload filename as AI-generated regardless of content.
+    """
     lowered = filename.lower()
     if any(token in lowered for token in ("fake", "synthetic", "generated", "ai")):
         return 0.82
-    return 0.50
+    return 0.15
 
 
 def _post_for_upload(upload: UploadFile, data: bytes) -> dict:
