@@ -40,10 +40,10 @@ train_only_augmentation:
   extra_color_jitter: true
 
 model:
-  backbone: "ViT-B-32"          # open_clip model name
+  backbone: "ViT-L-14-quickgelu" # open_clip model name
   pretrained: "openai"          # pretrained weight tag
   freeze_backbone: true         # set false to fine-tune the backbone too
-  embedding_dim: 512            # must match the chosen backbone's output dim
+  embedding_dim: 768            # must match the chosen backbone's output dim
   classifier_hidden_dim: 128
   dropout: 0.2
 
@@ -73,8 +73,8 @@ experiments:
       freeze_backbone: false
 
 similarity:
-  threshold: 0.85                # cosine similarity threshold for "same cluster"
-  clustering_method: "threshold" # "threshold" or "dbscan"
+  threshold: 0.90
+  clustering_method: "threshold"
   dbscan_eps: 0.15
   dbscan_min_samples: 2
 
