@@ -90,6 +90,17 @@ evaluation:
     auc_clean: 0.5
     auc_robust: 0.5
 
+# Trained AI-vs-real detector used by the backend feed (backend/detector.py):
+# a frozen CLIP backbone + the MLP head saved in `checkpoint`. `threshold` is the
+# P(AI) at/above which a post is labelled AI-generated.
+detector:
+  checkpoint: "combined_head.pt"
+  threshold: 0.5
+  # Re-score the committed demo seed posts with the model at startup. Turn off to
+  # keep the curated fixture labels (useful when the checkpoint generalises poorly
+  # to the demo image set) while still scoring live uploads.
+  score_seed: true
+
 calibration:
   method: "temperature_scaling"
 

@@ -10,6 +10,8 @@ outputs/*
 !outputs/.gitkeep
 *.pt
 *.pth
+# ...except the small trained detector head the backend ships with (791 KB).
+!combined_head.pt
 *.ckpt
 
 # Notebooks checkpoints
@@ -23,6 +25,18 @@ outputs/*
 # Frontend
 frontend/node_modules/
 frontend/dist/
+frontend/tsconfig.tsbuildinfo
+
+# Runtime upload artifacts (user-uploaded images during local runs)
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Working notes / scratch outputs
+FRONTEND_IMPLEMENTATION.md
+FRONTEND_REVIEW.md
+plan.md
+clustering_robustness_table.csv
+similarity_results_sanity_check.csv
 
 # Env
 .env

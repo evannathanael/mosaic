@@ -24,6 +24,8 @@ def main():
     parser.add_argument("--input_dir", required=True)
     parser.add_argument("--config", default="configs/config.yaml")
     parser.add_argument("--out", default="outputs/similarity_results.csv")
+    parser.add_argument("--emb_out", default=None,
+                        help="Optional .npz path to also dump the raw embedding matrix.")
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
 
@@ -45,6 +47,13 @@ def main():
         writer.writerow(["image_path", "similarity_cluster", "repetition_score"])
         for path, cid, score in zip(image_paths, cluster_ids, repetition_scores):
             writer.writerow([path, int(cid), round(float(score), 6)])
+
+    if args.emb_out:
+        import numpy as np
+
+        ensure_dir(Path(args.emb_out).parent)
+        np.savez_compressed(args.emb_out, paths=np.array(image_paths), embeddings=embeddings)
+        logger.info("Saved embedding matrix %s to %s", embeddings.shape, args.emb_out)
 
     logger.info("Saved %d rows to %s", len(image_paths), args.out)
     logger.info(

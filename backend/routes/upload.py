@@ -14,6 +14,8 @@ from PIL import Image, UnidentifiedImageError
 from backend.routes.feed import _feed_post
 from backend.schemas import AnalyzeResponse, FeedPost, Post
 from backend.media import MEDIA_STORE
+from backend.detector import ai_threshold, detector_ready, label_for, predict_pil
+from backend.similarity_index import annotate_cluster_similarity, assign_cluster, embed_image
 from backend.state import add_posts, all_posts, find_by_hash, next_cluster, update_posts
 
 
@@ -43,8 +45,8 @@ def _validate_and_thumbnail(data: bytes) -> tuple[Image.Image, str, int, int]:
     return image, image_format, width, height
 
 
-def _mock_probability(filename: str) -> float:
-    """Deterministic placeholder until the trained detector is available."""
+def _fallback_probability(filename: str) -> float:
+    """Filename heuristic used only when the trained detector is unavailable."""
     lowered = filename.lower()
     if any(token in lowered for token in ("fake", "synthetic", "generated", "ai")):
         return 0.82
@@ -75,9 +77,27 @@ def _post_for_upload(upload: UploadFile, data: bytes) -> dict:
             detail="Image storage upload failed; check Supabase bucket, credentials, and network settings.",
         ) from exc
 
+    # Exact re-post: inherit the matched post's cluster + embedding.
+    # Otherwise embed with CLIP and assign the cluster by cosine similarity to
+    # existing posts (near-duplicate detection), falling back to a fresh cluster.
     matches = find_by_hash(digest)
-    cluster = matches[0]["similarity_cluster"] if matches else next_cluster()
-    probability = _mock_probability(upload.filename or "")
+    if matches:
+        cluster = matches[0]["similarity_cluster"]
+        embedding = matches[0].get("embedding")
+        similarity = 1.0  # byte-identical re-post
+    else:
+        embedding = embed_image(image)
+        cluster, similarity = assign_cluster(embedding, all_posts(), next_cluster)
+
+    model_prob = predict_pil(image)
+    probability = model_prob if model_prob is not None else _fallback_probability(upload.filename or "")
+    analysis_mode = "model" if model_prob is not None else "mock"
+    # If CLIP matched this upload into an existing near-duplicate group, adopt
+    # that group's AI probability — the variants are the same image, so if the
+    # originals are AI this one is too (drives the repeated_synthetic label).
+    siblings = [p["ai_probability"] for p in all_posts() if p["similarity_cluster"] == cluster]
+    if siblings:
+        probability = max(probability, max(siblings))
     return {
         "image_id": image_id,
         "account_id": "uploaded-demo",
@@ -92,10 +112,12 @@ def _post_for_upload(upload: UploadFile, data: bytes) -> dict:
             "recolored": max(0.0, probability - 0.02),
         },
         "similarity_cluster": cluster,
+        "similarity_score": round(float(similarity), 4),
+        "embedding": embedding,
         "repetition_score": 0.0,
-        "diversity_label": "unique_ai" if probability >= 0.7 else "original",
+        "diversity_label": label_for(probability, repeated=False),
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "analysis_mode": "mock",
+        "analysis_mode": analysis_mode,
         "source": "upload",
         "image_sha256": digest,
         "width": width,
@@ -106,13 +128,38 @@ def _post_for_upload(upload: UploadFile, data: bytes) -> dict:
 
 
 def _recalculate_cluster(cluster: int) -> list[dict]:
+    """After a new post joins a cluster, refresh every member's repetition score
+    and label.
+
+    A cluster with >1 member is a near-duplicate group. Repeated *AI* content is
+    the problem case -> 'repeated_synthetic'. Repeated non-AI content (an ordinary
+    re-post) is fine -> stays 'original'; repetition_score still records it.
+    """
+    threshold = ai_threshold()
     posts = [post for post in all_posts() if post["similarity_cluster"] == cluster]
-    repetition = 0.0 if len(posts) <= 1 else min(0.99, 0.7 + 0.1 * (len(posts) - 2))
+    size = len(posts)
+    repetition = 0.0 if size <= 1 else round(min(0.99, 0.7 + 0.1 * (size - 2)), 2)
+    cluster_is_ai = any(post["ai_probability"] >= threshold for post in posts)
     for post in posts:
         post["repetition_score"] = repetition
-        if post["ai_probability"] >= 0.7:
-            post["diversity_label"] = "repeated_synthetic" if repetition >= 0.75 else "unique_ai"
+        post["diversity_label"] = label_for(
+            post["ai_probability"], repeated=(size > 1 and cluster_is_ai)
+        )
     return posts
+
+
+def apply_seed_scores_and_labels() -> None:
+    """Startup / reset hook: overwrite seed posts' AI probability with the trained
+    detector's cached scores (unless disabled in config), then re-derive every
+    post's diversity_label through the same cluster logic uploads use."""
+    from backend.demo import SEED_LABEL_OVERRIDES
+    from backend.detector import attach_seed_scores, score_seed_enabled
+
+    if score_seed_enabled():
+        attach_seed_scores(all_posts(), SEED_LABEL_OVERRIDES)
+    for cluster in {post["similarity_cluster"] for post in all_posts()}:
+        _recalculate_cluster(cluster)
+    annotate_cluster_similarity(all_posts())
 
 
 async def analyze_uploads(files: list[UploadFile]) -> list[dict]:
@@ -128,6 +175,7 @@ async def analyze_uploads(files: list[UploadFile]) -> list[dict]:
     changed: list[dict] = []
     for post in posts:
         changed.extend(_recalculate_cluster(post["similarity_cluster"]))
+    annotate_cluster_similarity(all_posts())
     update_posts(changed)
     return posts
 
@@ -141,7 +189,7 @@ async def analyze(files: list[UploadFile] = File(default=[]), file: UploadFile |
     posts = await analyze_uploads(uploads)
     return AnalyzeResponse(items=[Post.model_validate(post) for post in posts],
                            inference_latency_ms=round((time.perf_counter() - started) * 1000, 2),
-                           model_ready=False)
+                           model_ready=detector_ready())
 
 
 @router.post("/api/upload")
@@ -155,7 +203,7 @@ async def upload_legacy(files: list[UploadFile] = File(default=[]), file: Upload
         return Post.model_validate(posts[0])
     return AnalyzeResponse(items=[Post.model_validate(post) for post in posts],
                            inference_latency_ms=round((time.perf_counter() - started) * 1000, 2),
-                           model_ready=False)
+                           model_ready=detector_ready())
 
 
 @router.post("/upload", response_model=FeedPost)

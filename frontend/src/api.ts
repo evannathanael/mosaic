@@ -63,6 +63,29 @@ export async function uploadImage(file: File, signal?: AbortSignal): Promise<Pos
   return res.json()
 }
 
+export interface ClusterDetail {
+  cluster_id: number
+  kept_image_id: string
+  members: Post[]
+  suppressed_image_ids: string[]
+}
+
+/** Full member list for a similarity cluster — DB-wide, not just the loaded feed. */
+export async function getClusterDetail(clusterId: number): Promise<ClusterDetail> {
+  if (USE_MOCK) {
+    const members = mockFeed.filter((p) => p.similarity_cluster === clusterId)
+    return {
+      cluster_id: clusterId,
+      kept_image_id: members[0]?.image_id ?? '',
+      members,
+      suppressed_image_ids: members.slice(1).map((p) => p.image_id),
+    }
+  }
+  const res = await fetch(`${API_BASE}/api/cluster/${clusterId}`)
+  if (!res.ok) throw new Error('Failed to fetch cluster')
+  return res.json()
+}
+
 export async function reset(): Promise<{ status: 'reset' }> {
   if (USE_MOCK) {
     mockFeed = [...FIXTURES]

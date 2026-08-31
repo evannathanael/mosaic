@@ -40,6 +40,12 @@ class FeedPost(BaseModel):
     ai_probability: float = Field(ge=0.0, le=1.0)
     repetition_score: float = Field(ge=0.0, le=1.0)
     diversity_label: Literal["original", "unique_ai", "repeated_synthetic"]
+    similarity_cluster: int
+    # How many posts (this one included) share the similarity_cluster, DB-wide —
+    # so the UI's "1 of N" chip doesn't depend on how far the feed is scrolled.
+    cluster_size: int = 1
+    # Max cosine similarity of this image to any other post in its cluster (0-1).
+    similarity_score: float = Field(default=0.0, ge=0.0, le=1.0)
     uploaded_at: int
 
 

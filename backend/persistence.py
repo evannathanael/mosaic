@@ -28,6 +28,8 @@ def _row(post: dict[str, Any], *, is_seed: bool = False) -> dict[str, Any]:
         "confidence": post["confidence"],
         "robustness": post["robustness"],
         "similarity_cluster": post["similarity_cluster"],
+        "similarity_score": post.get("similarity_score", 0.0),
+        "embedding": post.get("embedding"),
         "repetition_score": post["repetition_score"],
         "diversity_label": post["diversity_label"],
         "created_at": post["created_at"],
@@ -128,6 +130,7 @@ class SupabaseRepository:
             self.client.table("posts").update({
                 "repetition_score": post["repetition_score"],
                 "diversity_label": post["diversity_label"],
+                "similarity_score": post.get("similarity_score", 0.0),
             }).eq("image_id", post["image_id"]).execute()
 
     def next_cluster(self) -> int:

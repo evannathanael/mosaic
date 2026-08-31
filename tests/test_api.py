@@ -16,7 +16,9 @@ def test_health_and_seed_feed():
     with TestClient(app) as client:
         health = client.get("/api/health")
         assert health.status_code == 200
-        assert health.json()["model_ready"] is False
+        body = health.json()
+        assert isinstance(body["model_ready"], bool)
+        assert body["analysis_mode"] == ("model" if body["model_ready"] else "mock")
         feed = client.get("/api/feed")
         assert feed.status_code == 200
         assert feed.json()
@@ -29,13 +31,32 @@ def test_upload_and_duplicate_cluster():
         response = client.post("/api/analyze", files={"files": ("photo.jpg", payload, "image/jpeg")})
         assert response.status_code == 200
         first = response.json()["items"][0]
-        assert first["analysis_mode"] == "mock"
-        assert first["ai_probability"] == 0.5
+        assert first["analysis_mode"] in {"model", "mock"}
+        assert 0.0 <= first["ai_probability"] <= 1.0
+        assert response.json()["model_ready"] is (first["analysis_mode"] == "model")
 
         second = client.post("/api/upload", files={"file": ("photo.jpg", payload, "image/jpeg")})
         assert second.status_code == 200
         assert second.json()["similarity_cluster"] == first["similarity_cluster"]
         assert client.get("/api/clusters").status_code == 200
+
+
+def test_feed_exposes_similarity_cluster():
+    with TestClient(app) as client:
+        feed = client.get("/feed").json()
+        assert all(isinstance(post["similarity_cluster"], int) for post in feed)
+        assert all(isinstance(post["cluster_size"], int) and post["cluster_size"] >= 1 for post in feed)
+        assert all(0.0 <= post["similarity_score"] <= 1.0 for post in feed)
+
+
+def test_cluster_size_matches_membership():
+    with TestClient(app) as client:
+        feed = client.get("/feed").json()
+        from collections import Counter
+
+        actual = Counter(p["similarity_cluster"] for p in feed)
+        for post in feed:
+            assert post["cluster_size"] == actual[post["similarity_cluster"]]
 
 
 def test_upload_rejects_invalid_file():
@@ -61,7 +82,8 @@ def test_frontend_contract_and_reset():
         assert posts
         assert set(posts[0]) == {
             "image_id", "thumbnail_url", "handle", "ai_probability",
-            "repetition_score", "diversity_label", "uploaded_at",
+            "repetition_score", "diversity_label", "similarity_cluster",
+            "cluster_size", "similarity_score", "uploaded_at",
         }
         assert all(posts[i]["uploaded_at"] >= posts[i + 1]["uploaded_at"] for i in range(len(posts) - 1))
 

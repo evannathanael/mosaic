@@ -10,6 +10,12 @@ export interface Post {
   ai_probability: number // 0-1
   repetition_score: number // 0-1
   diversity_label: DiversityLabel
+  /** Near-duplicate group id from the similarity engine. Optional: mock fixtures omit it. */
+  similarity_cluster?: number
+  /** How many posts share this similarity_cluster DB-wide (not just the loaded feed). */
+  cluster_size?: number
+  /** Max cosine similarity (0-1) of this image to another post in its cluster. */
+  similarity_score?: number
   uploaded_at: number // unix seconds
 
   /** Frontend-only, never sent to the backend. Stable React key across the temp->real swap. */
