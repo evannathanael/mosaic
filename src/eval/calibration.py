@@ -16,21 +16,21 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from src.data.dataset import scan_dataset, split_samples, AIGCDataset
-from src.models.classifier import AIGCDetector
+from src.data.dataset import split_samples
+from src.eval.data_compat import scan_all_sources, load_eval_model, EvalDataset
 from src.utils import load_config, get_logger
 
 logger = get_logger(__name__)
 
 
-def fit_temperature(model: AIGCDetector, val_loader: DataLoader, device: str, max_iter: int = 50) -> float:
+def fit_temperature(model, val_loader: DataLoader, device: str, max_iter: int = 50) -> float:
     model.eval()
     logits_list, labels_list = [], []
     with torch.no_grad():
         for batch in val_loader:
             images = batch["image"].float().to(device)
-            embedding = model.backbone(images)
-            logits = model.classifier(embedding)  # RAW logits, pre-temperature
+            embedding = model.embed(images)
+            logits = model.logits_from_embedding(embedding)  # RAW logits, pre-temperature
             logits_list.append(logits)
             labels_list.append(batch["label"].float().to(device))
 
@@ -61,9 +61,9 @@ def main():
     args = parser.parse_args()
 
     config = load_config(args.config)
-    model = AIGCDetector.load(args.checkpoint, config, device=args.device)
+    model = load_eval_model(args.checkpoint, config, device=args.device)
 
-    samples = scan_dataset(config["data"]["raw_dir"])
+    samples = scan_all_sources(config)
     splits = split_samples(
         samples,
         holdout_generator=config["data"]["holdout_generator"],
@@ -71,8 +71,11 @@ def main():
         val_split=config["data"]["val_split"],
         seed=config["seed"],
     )
-    val_ds = AIGCDataset(splits["val"], config, mode="eval", eval_transform_name="clean")
-    val_loader = DataLoader(val_ds, batch_size=config["training"]["batch_size"], shuffle=False)
+    val_ds = EvalDataset(splits["val"], config, eval_transform_name="clean")
+    val_loader = DataLoader(
+        val_ds, batch_size=config["evaluation"].get("batch_size", config["training"]["batch_size"]), shuffle=False,
+        num_workers=0, pin_memory=(args.device == "cuda"),
+    )
 
     temperature = fit_temperature(model, val_loader, args.device)
     model.temperature.data = torch.tensor([temperature])
