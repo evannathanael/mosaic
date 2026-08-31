@@ -1,6 +1,6 @@
-"""Train a frozen-CLIP + MLP-head AI-image detector on CIFAKE, SID-Set, or
-WildFake, then report accuracy on clean test images AND on each robustness
-perturbation separately.
+"""Train a frozen-CLIP + MLP-head AI-image detector on CIFAKE or SID-Set, then
+report accuracy on clean test images AND on each robustness perturbation
+separately.
 
 Which dataset trains/evaluates is a single switch — DATASET below — so you
 can flip between them without touching anything downstream:
@@ -34,23 +34,12 @@ Every loader produces the exact same (image, binary_label) shape per item, so
 everything past dataset construction — the frozen backbone, the embedding
 cache, the MLP head, robustness eval, and checkpointing — is 100% shared code.
 
-    - "combined": trains ONE head jointly over all three sources (avoiding
-      the catastrophic forgetting that sequential per-source fine-tuning
-      causes with no rehearsal), by embedding each source's train split
-      separately (each needs its own dataset/transform) and concatenating
-      the resulting cached tensors before a single train_head() call — see
-      run_combined() below. Evaluation reports accuracy per source AND
-      pooled, for every condition, so a source-specific regression (like a
-      model that's forgotten CIFAKE) is visible in the table rather than
-      averaged away.
-
 Pipeline:
     1. Load the selected dataset (see DATASET switch above).
-    2. Labels are 0 = real, 1 = AI ("fake") for all three datasets. CIFAKE's
+    2. Labels are 0 = real, 1 = AI ("fake") for both datasets. CIFAKE's
        ImageFolder assigns indices alphabetically (FAKE=0, REAL=1) — the
        OPPOSITE of this project's convention — so BinaryCifakeFolder remaps
-       it; SID-Set's and WildFake's remaps are the label policies described
-       above.
+       it; SID-Set's remap is the label policy described above.
     3. Build the model: frozen open_clip ViT-L/14 backbone (`AIGCClipDetector`
        in clip_aigc_head.py) + a small trainable MLP head.
     4. EMBED ONCE, then train the head on cached embeddings (the perf fix):
@@ -111,8 +100,7 @@ from src.models.clip_aigc_head import AIGCClipDetector, MlpHead
 # CONFIG — edit these first. Shrink the *_SUBSET values for fast CPU runs;
 # set them to None to use the full dataset once you scale up (e.g. on Colab).
 # =====================================================================
-DATASET = "cifake"  # "cifake", "sid_set", "wildfake", or "combined" — flip this to switch; also names outputs/{DATASET}_*
-COMBINED_SOURCES = ["cifake", "sid_set", "wildfake"]  # pooled, in this order, when DATASET == "combined"
+DATASET = "cifake"  # "cifake" or "sid_set" — flip this to switch datasets; also names outputs/{DATASET}_*
 
 TRAIN_SUBSET = 200   # images PER CLASS from the selected dataset's train split (None = all)
 VAL_SUBSET = 200      # images PER CLASS from the selected dataset's eval split, used for the table (None = all)
@@ -140,16 +128,6 @@ TEST_DIR = DATA_ROOT / "test"
 SID_SET_RAW_ROOT = Path("data/raw/sid_set")
 SID_SET_MANIFEST_DIR = Path("data/processed/sid_set")
 SID_SET_SPLITS = {"train": "train", "eval": "validation"}  # SID-Set's eval split is named "validation", not "test"
-
-# WildFake: Vicky's cleaner (src/data/clean_wildfake.py) writes a manifest
-# here referencing each image by (archive_path, member_path) inside a ZIP —
-# WILDFAKE_MANIFEST_DIR/clean_manifest.csv is what WildfakeArchiveDataset
-# reads, WILDFAKE_RAW_ROOT is where the (manually downloaded) ZIP archives
-# live. clean_wildfake.py's splits are train/validation/test; this loader
-# uses "validation" as the eval split, matching SID_SET_SPLITS's convention.
-WILDFAKE_RAW_ROOT = Path("data/raw/wildfake")
-WILDFAKE_MANIFEST_DIR = Path("data/processed/wildfake")
-WILDFAKE_SPLITS = {"train": "train", "eval": "validation"}
 
 CLIP_MODEL_NAME = "ViT-L-14"
 CLIP_PRETRAINED = "openai"   # first run downloads + caches weights (~890MB) via open_clip/HF hub
@@ -699,86 +677,6 @@ def load_head_checkpoint(path: Path, device: str = DEVICE) -> tuple[MlpHead, dic
     head.eval()
     metadata = {k: v for k, v in checkpoint.items() if k != "head_state_dict"}
     return head, metadata
-
-
-# =====================================================================
-# Combined/joint training — pools cached embeddings from all COMBINED_SOURCES
-# into one train_head() call, instead of separate per-source runs (which,
-# run sequentially against a checkpoint that carries forward, is exactly the
-# recipe for catastrophic forgetting: each stage's gradient updates have no
-# way to "remember" the previous stage's data, since the frozen backbone
-# gives a fixed feature space but the small head has no rehearsal signal).
-# One head, one loss, gradients from every source in the same batches.
-# =====================================================================
-def run_combined(model: AIGCClipDetector, clip_preprocess) -> None:
-    print(f"Combined training over sources: {COMBINED_SOURCES}")
-
-    train_features_by_source: dict[str, torch.Tensor] = {}
-    train_labels_by_source: dict[str, torch.Tensor] = {}
-    eval_bases: dict[str, object] = {}
-    eval_indices_by_source: dict[str, list[int]] = {}
-
-    for source in COMBINED_SOURCES:
-        print(f"\n--- {source} ---")
-        train_base, train_indices, eval_base, eval_indices = DATASET_BUILDERS[source]()
-        features, labels = embed_indices(
-            model, train_base, train_indices, build_train_transform(clip_preprocess), desc=f"train:{source}"
-        )
-        train_features_by_source[source] = features
-        train_labels_by_source[source] = labels
-        eval_bases[source] = eval_base
-        eval_indices_by_source[source] = eval_indices
-
-    train_features = torch.cat(list(train_features_by_source.values()))
-    train_labels = torch.cat(list(train_labels_by_source.values()))
-    print(f"\nPooled train samples: {train_features.size(0)} across {len(COMBINED_SOURCES)} sources")
-
-    print("\nTraining head jointly on pooled cached embeddings...")
-    train_head(model, train_features, train_labels, EPOCHS, BATCH_SIZE, LEARNING_RATE, WEIGHT_DECAY)
-
-    # --- Checkpoint: save the trained head, then verify it reloads correctly ---
-    save_head_checkpoint(model, HEAD_CHECKPOINT_PATH)
-    reloaded_head, checkpoint_meta = load_head_checkpoint(HEAD_CHECKPOINT_PATH, device=DEVICE)
-    model.head.eval()
-    with torch.no_grad():
-        probe = train_features[: min(8, train_features.size(0))]
-        original_out = model.head(probe)
-        reloaded_out = reloaded_head(probe)
-    if not torch.allclose(original_out, reloaded_out):
-        raise RuntimeError("Checkpoint round-trip mismatch: reloaded head does not match the trained head.")
-    print(f"Checkpoint verified: reloaded head matches trained weights (meta={checkpoint_meta}).")
-
-    # --- Eval: every condition, scored per source AND pooled across sources ---
-    print("\nEvaluating per source AND pooled (each condition embedded once per source)...")
-    results = []
-    conditions = {"clean": None, **PERTURBATIONS}
-    for name, perturbation_fn in conditions.items():
-        pooled_features, pooled_labels = [], []
-        for source in COMBINED_SOURCES:
-            set_seed(SEED)  # keep perturbations with randomness (RRC, color jitter) reproducible run-to-run
-            features, labels = embed_indices(
-                model, eval_bases[source], eval_indices_by_source[source],
-                build_eval_transform(clip_preprocess, perturbation_fn), desc=f"{name}:{source}",
-            )
-            acc = evaluate_head(model, features, labels)
-            results.append({"condition": name, "source": source, "n": len(eval_indices_by_source[source]),
-                             "accuracy": round(acc, 4)})
-            print(f"  {name:<18} {source:<10} accuracy: {acc:.4f}")
-            pooled_features.append(features)
-            pooled_labels.append(labels)
-
-        pooled_acc = evaluate_head(model, torch.cat(pooled_features), torch.cat(pooled_labels))
-        results.append({"condition": name, "source": "combined", "n": sum(f.size(0) for f in pooled_features),
-                         "accuracy": round(pooled_acc, 4)})
-        print(f"  {name:<18} {'combined':<10} accuracy: {pooled_acc:.4f}")
-
-    table = pd.DataFrame(results)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    table.to_csv(TABLE_PATH, index=False)
-
-    print("\n=== Robustness table (per source + pooled, clean vs. each perturbation) ===")
-    print(table.to_string(index=False))
-    print(f"\nSaved to {TABLE_PATH}")
 
 
 def main() -> None:
