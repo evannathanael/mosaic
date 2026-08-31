@@ -510,14 +510,27 @@ def gaussian_noise(image: Image.Image, sigma: float = NOISE_SIGMA) -> Image.Imag
     return Image.fromarray(noisy)
 
 
+# PERTURBATIONS drives the eval table (conditions = {"clean": None,
+# **PERTURBATIONS}, in main(), run_combined(), AND eval_only.py) — this set
+# is intentionally left exactly as it was, so the eval table's rows are
+# unchanged. gaussian_noise is deliberately NOT in here.
 PERTURBATIONS = {
     "jpeg_recompress": jpeg_recompress,
     "gaussian_blur": gaussian_blur,
     "random_resized_crop": random_resized_crop,
     "downscale_upscale": downscale_upscale,
     "color_jitter": color_jitter,
-    "gaussian_noise": gaussian_noise,
 }
+
+# TRAIN_PERTURBATIONS is what RandomRobustnessAugment actually applies during
+# training — PERTURBATIONS plus gaussian_noise. Kept as a separate dict
+# (rather than adding noise straight into PERTURBATIONS) specifically so
+# training coverage can include noise without changing what the eval table
+# reports — training augmentation and eval conditions are two different
+# concerns that happened to share one dict before this split, which is what
+# caused eval to silently gain a 7th row when noise was added; don't
+# recombine them without deciding that's actually wanted.
+TRAIN_PERTURBATIONS = {**PERTURBATIONS, "gaussian_noise": gaussian_noise}
 
 
 class RandomRobustnessAugment:
@@ -530,7 +543,7 @@ class RandomRobustnessAugment:
         self.prob = prob
 
     def __call__(self, image: Image.Image) -> Image.Image:
-        for fn in PERTURBATIONS.values():
+        for fn in TRAIN_PERTURBATIONS.values():
             if random.random() < self.prob:
                 image = fn(image)
         return image
