@@ -77,14 +77,25 @@ def train(config: dict):
 
     # --- Model ---
     model = AIGCDetector(config).to(device)
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
-    logger.info("Trainable parameters: %d", sum(p.numel() for p in trainable_params))
 
-    optimizer = torch.optim.AdamW(
-        trainable_params,
-        lr=config["training"]["learning_rate"],
-        weight_decay=config["training"]["weight_decay"],
+    # Separate param groups so an unfrozen backbone (finetune_backbone
+    # experiment) trains at a much smaller LR than the head — reusing the
+    # head's LR for pretrained CLIP weights risks blowing them up. When the
+    # backbone is fully frozen this group is just empty and AdamW ignores it.
+    head_params = [p for p in model.classifier.parameters() if p.requires_grad]
+    backbone_params = [p for p in model.backbone.parameters() if p.requires_grad]
+    logger.info(
+        "Trainable parameters: %d head + %d backbone",
+        sum(p.numel() for p in head_params), sum(p.numel() for p in backbone_params),
     )
+
+    param_groups = [{"params": head_params, "lr": config["training"]["learning_rate"]}]
+    if backbone_params:
+        param_groups.append({
+            "params": backbone_params,
+            "lr": config["training"].get("backbone_learning_rate", config["training"]["learning_rate"]),
+        })
+    optimizer = torch.optim.AdamW(param_groups, weight_decay=config["training"]["weight_decay"])
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config["training"]["epochs"])
     criterion = nn.BCEWithLogitsLoss()
 

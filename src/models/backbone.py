@@ -27,9 +27,28 @@ class SharedBackbone(nn.Module):
         self.preprocess = preprocess  # exposed for reference; dataset.py does its own equivalent normalization
         self.embedding_dim = model_cfg["embedding_dim"]
 
+        unfreeze_last_n = model_cfg.get("unfreeze_last_n_blocks", 0)
         if model_cfg.get("freeze_backbone", True):
             for p in self.encoder.parameters():
                 p.requires_grad = False
+        elif unfreeze_last_n > 0:
+            # Partial fine-tune: freeze everything, then re-enable gradients
+            # only for the last `unfreeze_last_n` transformer blocks plus the
+            # final layer norm / output projection sitting directly
+            # downstream of them. Early layers (patch embed, class/positional
+            # embeddings, ln_pre) stay frozen — they're the least
+            # task-specific and the priciest to destabilize with a small
+            # fine-tuning dataset.
+            for p in self.encoder.parameters():
+                p.requires_grad = False
+            for block in self.encoder.transformer.resblocks[-unfreeze_last_n:]:
+                for p in block.parameters():
+                    p.requires_grad = True
+            for p in self.encoder.ln_post.parameters():
+                p.requires_grad = True
+            if self.encoder.proj is not None:
+                self.encoder.proj.requires_grad = True
+        # else: freeze_backbone false and unfreeze_last_n_blocks unset/0 -> full fine-tune, every param trains
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         """images: (B, 3, H, W) float tensor, normalized to roughly [-1, 1].
@@ -40,6 +59,9 @@ class SharedBackbone(nn.Module):
 
     def param_count(self) -> int:
         return sum(p.numel() for p in self.encoder.parameters())
+
+    def trainable_param_count(self) -> int:
+        return sum(p.numel() for p in self.encoder.parameters() if p.requires_grad)
 
 
 def print_param_budget(config: dict, classifier_params: int = 0):
