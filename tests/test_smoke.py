@@ -43,7 +43,7 @@ def test_classifier_head_shapes():
 
 
 def test_union_find_clustering_logic():
-    from src.similarity.clustering import cluster_threshold
+    from src.similarity.similarity import cluster_threshold
     import numpy as np
 
     # 3 near-identical embeddings + 1 distinct one -> expect 2 clusters

@@ -13,12 +13,11 @@ import argparse
 import json
 from pathlib import Path
 
-import numpy as np
 import torch
 
 from src.models.classifier import AIGCDetector
-from src.similarity.embeddings import extract_embeddings, load_and_preprocess
-from src.similarity.clustering import compute_clusters, compute_repetition_scores
+from src.similarity.embed import extract_embeddings, load_and_preprocess
+from src.similarity.similarity import cluster_images, repetition_score
 from src.utils import load_config, get_logger, ensure_dir
 
 logger = get_logger(__name__)
@@ -36,20 +35,19 @@ def run_inference(input_dir: str, checkpoint_path: str, config: dict, device: st
     model = AIGCDetector.load(checkpoint_path, config, device=device)
 
     # --- AI classification ---
-    image_size = config["data"]["image_size"]
     preds = []
     batch_size = config["training"]["batch_size"]
     for i in range(0, len(image_paths), batch_size):
         batch_paths = image_paths[i:i + batch_size]
-        batch = np.stack([load_and_preprocess(p, image_size) for p in batch_paths])
-        batch_tensor = torch.from_numpy(batch).float().to(device)
+        batch = torch.stack([load_and_preprocess(p, model.backbone) for p in batch_paths])
+        batch_tensor = batch.to(device)
         probs = model.predict_proba(batch_tensor).cpu().numpy()
         preds.extend(probs.tolist())
 
     # --- Similarity / near-duplicate clustering (reuses the SAME backbone) ---
     embeddings = extract_embeddings(image_paths, model.backbone, config, device=device)
-    cluster_ids = compute_clusters(embeddings, config)
-    repetition_scores = compute_repetition_scores(cluster_ids)
+    cluster_ids = cluster_images(embeddings, config)
+    repetition_scores = repetition_score(cluster_ids)
 
     results = []
     for path, pred, cluster_id, rep_score in zip(image_paths, preds, cluster_ids, repetition_scores):

@@ -1,0 +1,17 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+pillow>=10.0
+httpx>=0.27
+pytest>=8.0
+python-dotenv>=1.0
+supabase>=2.0
+
+# CLIP-based ML: near-duplicate embeddings (backend/similarity_index.py) and the
+# trained AI-vs-real detector head (backend/detector.py, combined_head.pt).
+# The backend still runs without these — embedding degrades to None (sha256
+# exact-match clustering) and AI scoring degrades to a filename heuristic.
+numpy>=1.24
+torch>=2.1
+open_clip_torch>=2.24
+pyyaml>=6.0
