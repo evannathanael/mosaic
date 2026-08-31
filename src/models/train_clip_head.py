@@ -34,6 +34,16 @@ Every loader produces the exact same (image, binary_label) shape per item, so
 everything past dataset construction — the frozen backbone, the embedding
 cache, the MLP head, robustness eval, and checkpointing — is 100% shared code.
 
+    - "combined": trains ONE head jointly over all three sources (avoiding
+      the catastrophic forgetting that sequential per-source fine-tuning
+      causes with no rehearsal), by embedding each source's train split
+      separately (each needs its own dataset/transform) and concatenating
+      the resulting cached tensors before a single train_head() call — see
+      run_combined() below. Evaluation reports accuracy per source AND
+      pooled, for every condition, so a source-specific regression (like a
+      model that's forgotten CIFAKE) is visible in the table rather than
+      averaged away.
+
 Pipeline:
     1. Load the selected dataset (see DATASET switch above).
     2. Labels are 0 = real, 1 = AI ("fake") for all three datasets. CIFAKE's
@@ -85,6 +95,7 @@ import time
 import zipfile
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 import torch
@@ -100,7 +111,8 @@ from src.models.clip_aigc_head import AIGCClipDetector, MlpHead
 # CONFIG — edit these first. Shrink the *_SUBSET values for fast CPU runs;
 # set them to None to use the full dataset once you scale up (e.g. on Colab).
 # =====================================================================
-DATASET = "cifake"  # "cifake", "sid_set", or "wildfake" — flip this to switch datasets; also names outputs/{DATASET}_*
+DATASET = "cifake"  # "cifake", "sid_set", "wildfake", or "combined" — flip this to switch; also names outputs/{DATASET}_*
+COMBINED_SOURCES = ["cifake", "sid_set", "wildfake"]  # pooled, in this order, when DATASET == "combined"
 
 TRAIN_SUBSET = 200   # images PER CLASS from the selected dataset's train split (None = all)
 VAL_SUBSET = 200      # images PER CLASS from the selected dataset's eval split, used for the table (None = all)
@@ -176,6 +188,7 @@ BLUR_RADIUS = 2.0
 RRC_SCALE = (0.5, 1.0)
 DOWNSCALE_FACTOR = 0.25
 COLOR_JITTER_STRENGTH = 0.3
+NOISE_SIGMA = 0.10  # matches config.yaml's noise_0.10 — the specific condition robustness.py flagged as weakest
 TRAIN_AUG_PROB = 0.5  # probability each individual perturbation is applied during training
 
 
@@ -481,12 +494,29 @@ def color_jitter(image: Image.Image, strength: float = COLOR_JITTER_STRENGTH) ->
     return transforms.ColorJitter(brightness=strength, contrast=strength, saturation=strength)(image)
 
 
+def gaussian_noise(image: Image.Image, sigma: float = NOISE_SIGMA) -> Image.Image:
+    """Additive Gaussian pixel noise — same math as src/data/transforms.py's
+    apply_gaussian_noise (sigma is a fraction of the 0-255 range), kept as a
+    local reimplementation rather than an import so this script stays one
+    portable file. This was the one condition config.yaml's official 6-
+    transform grid requires that training augmentation never covered —
+    added after robustness.py's full table showed it as the biggest AUC
+    drop of the six (0.749 clean -> 0.662 at noise_0.10) on an
+    otherwise-untrained-for perturbation.
+    """
+    arr = np.asarray(image).astype(np.float32)
+    noise = np.random.normal(0, sigma * 255, arr.shape).astype(np.float32)
+    noisy = np.clip(arr + noise, 0, 255).astype(np.uint8)
+    return Image.fromarray(noisy)
+
+
 PERTURBATIONS = {
     "jpeg_recompress": jpeg_recompress,
     "gaussian_blur": gaussian_blur,
     "random_resized_crop": random_resized_crop,
     "downscale_upscale": downscale_upscale,
     "color_jitter": color_jitter,
+    "gaussian_noise": gaussian_noise,
 }
 
 
@@ -658,6 +688,86 @@ def load_head_checkpoint(path: Path, device: str = DEVICE) -> tuple[MlpHead, dic
     return head, metadata
 
 
+# =====================================================================
+# Combined/joint training — pools cached embeddings from all COMBINED_SOURCES
+# into one train_head() call, instead of separate per-source runs (which,
+# run sequentially against a checkpoint that carries forward, is exactly the
+# recipe for catastrophic forgetting: each stage's gradient updates have no
+# way to "remember" the previous stage's data, since the frozen backbone
+# gives a fixed feature space but the small head has no rehearsal signal).
+# One head, one loss, gradients from every source in the same batches.
+# =====================================================================
+def run_combined(model: AIGCClipDetector, clip_preprocess) -> None:
+    print(f"Combined training over sources: {COMBINED_SOURCES}")
+
+    train_features_by_source: dict[str, torch.Tensor] = {}
+    train_labels_by_source: dict[str, torch.Tensor] = {}
+    eval_bases: dict[str, object] = {}
+    eval_indices_by_source: dict[str, list[int]] = {}
+
+    for source in COMBINED_SOURCES:
+        print(f"\n--- {source} ---")
+        train_base, train_indices, eval_base, eval_indices = DATASET_BUILDERS[source]()
+        features, labels = embed_indices(
+            model, train_base, train_indices, build_train_transform(clip_preprocess), desc=f"train:{source}"
+        )
+        train_features_by_source[source] = features
+        train_labels_by_source[source] = labels
+        eval_bases[source] = eval_base
+        eval_indices_by_source[source] = eval_indices
+
+    train_features = torch.cat(list(train_features_by_source.values()))
+    train_labels = torch.cat(list(train_labels_by_source.values()))
+    print(f"\nPooled train samples: {train_features.size(0)} across {len(COMBINED_SOURCES)} sources")
+
+    print("\nTraining head jointly on pooled cached embeddings...")
+    train_head(model, train_features, train_labels, EPOCHS, BATCH_SIZE, LEARNING_RATE, WEIGHT_DECAY)
+
+    # --- Checkpoint: save the trained head, then verify it reloads correctly ---
+    save_head_checkpoint(model, HEAD_CHECKPOINT_PATH)
+    reloaded_head, checkpoint_meta = load_head_checkpoint(HEAD_CHECKPOINT_PATH, device=DEVICE)
+    model.head.eval()
+    with torch.no_grad():
+        probe = train_features[: min(8, train_features.size(0))]
+        original_out = model.head(probe)
+        reloaded_out = reloaded_head(probe)
+    if not torch.allclose(original_out, reloaded_out):
+        raise RuntimeError("Checkpoint round-trip mismatch: reloaded head does not match the trained head.")
+    print(f"Checkpoint verified: reloaded head matches trained weights (meta={checkpoint_meta}).")
+
+    # --- Eval: every condition, scored per source AND pooled across sources ---
+    print("\nEvaluating per source AND pooled (each condition embedded once per source)...")
+    results = []
+    conditions = {"clean": None, **PERTURBATIONS}
+    for name, perturbation_fn in conditions.items():
+        pooled_features, pooled_labels = [], []
+        for source in COMBINED_SOURCES:
+            set_seed(SEED)  # keep perturbations with randomness (RRC, color jitter) reproducible run-to-run
+            features, labels = embed_indices(
+                model, eval_bases[source], eval_indices_by_source[source],
+                build_eval_transform(clip_preprocess, perturbation_fn), desc=f"{name}:{source}",
+            )
+            acc = evaluate_head(model, features, labels)
+            results.append({"condition": name, "source": source, "n": len(eval_indices_by_source[source]),
+                             "accuracy": round(acc, 4)})
+            print(f"  {name:<18} {source:<10} accuracy: {acc:.4f}")
+            pooled_features.append(features)
+            pooled_labels.append(labels)
+
+        pooled_acc = evaluate_head(model, torch.cat(pooled_features), torch.cat(pooled_labels))
+        results.append({"condition": name, "source": "combined", "n": sum(f.size(0) for f in pooled_features),
+                         "accuracy": round(pooled_acc, 4)})
+        print(f"  {name:<18} {'combined':<10} accuracy: {pooled_acc:.4f}")
+
+    table = pd.DataFrame(results)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    table.to_csv(TABLE_PATH, index=False)
+
+    print("\n=== Robustness table (per source + pooled, clean vs. each perturbation) ===")
+    print(table.to_string(index=False))
+    print(f"\nSaved to {TABLE_PATH}")
+
+
 def main() -> None:
     set_seed(SEED)
     print(f"Device: {DEVICE}")
@@ -674,9 +784,13 @@ def main() -> None:
 
     clip_preprocess = model.clip_preprocess
 
+    if DATASET == "combined":
+        run_combined(model, clip_preprocess)
+        return
+
     # --- Step 1-2: datasets (transform set per-embedding-pass below) ---
     if DATASET not in DATASET_BUILDERS:
-        raise ValueError(f"Unknown DATASET {DATASET!r}. Choose one of {list(DATASET_BUILDERS)}.")
+        raise ValueError(f"Unknown DATASET {DATASET!r}. Choose one of {list(DATASET_BUILDERS) + ['combined']}.")
     print(f"Dataset: {DATASET}")
     train_base, train_indices, test_base, eval_indices = DATASET_BUILDERS[DATASET]()
 
