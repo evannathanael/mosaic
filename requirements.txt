@@ -44,3 +44,39 @@ tqdm==4.70.0
 typing_extensions==4.16.0
 urllib3==2.7.0
 wcwidth==0.8.3
+# Core
+torch>=2.1.0
+torchvision>=0.16.0
+open_clip_torch>=2.24.0
+numpy>=1.24.0
+pandas>=2.0.0
+scikit-learn>=1.3.0
+pillow>=10.0.0
+pyyaml>=6.0
+pyarrow>=14.0.0   # reads SID-Set's Parquet shards (src/data/clean_sid_set.py, src/models/train_clip_head.py) —
+                  # was previously only present as a transitive dep of streamlit; now explicit
+
+# Augmentation / image processing
+albumentations>=1.4.0
+opencv-python-headless>=4.9.0
+
+# Similarity / clustering
+scipy>=1.11.0
+
+# Explainability (Grad-CAM)
+grad-cam>=1.5.0
+
+# Calibration & metrics
+matplotlib>=3.8.0
+
+# Demo app
+streamlit>=1.32.0
+
+# Dataset download helpers
+huggingface_hub>=0.21.0
+kagglehub>=0.2.0
+requests>=2.31.0
+
+# Dev / testing
+pytest>=8.0.0
+tqdm>=4.66.0
