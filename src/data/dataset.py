@@ -14,6 +14,8 @@ Splitting rules implemented here (important — read before changing):
      train/val entirely and reserved for the "unseen generator" robustness
      test — this is what lets us report genuine generalization, not memorization.
 """
+import hashlib
+import json
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +25,8 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 from src.data.transforms import random_train_transform
+
+DEFAULT_SPLIT_CACHE_PATH = "data/processed/split_cache.json"
 
 
 @dataclass
@@ -59,16 +63,63 @@ def scan_dataset(raw_dir: str) -> list[Sample]:
     return samples
 
 
+def _samples_fingerprint(samples: list[Sample]) -> str:
+    """Hash of the exact set of sample paths (order-independent), used to
+    tell whether a cached split still matches the current data/raw/ contents.
+    """
+    digest = hashlib.sha256()
+    for path in sorted(s.path for s in samples):
+        digest.update(path.encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def split_samples(
     samples: list[Sample],
     holdout_generator: str,
     train_split: float,
     val_split: float,
     seed: int = 42,
+    cache_path: str | Path | None = DEFAULT_SPLIT_CACHE_PATH,
 ) -> dict[str, list[Sample]]:
     """Leakage-free split at the source-image level, with one generator held
     out entirely for the unseen-generator generalization test.
+
+    Cached to `cache_path` (by default), keyed on
+    (holdout_generator, train_split, val_split, seed, and a fingerprint of
+    the exact sample paths). Without this, re-running training/eval against
+    a fresh scan_dataset() scan is NOT guaranteed to reproduce the same
+    split even with the same seed: filesystem enumeration order isn't
+    stable, so the same seed shuffling a differently-ordered input list
+    gives a different result — this was a verified, real source of two
+    identical-code runs training/testing on different images. Once a split
+    is cached for a given fingerprint, every later call with the same
+    fingerprint/config reuses the exact same split; if the underlying
+    sample set genuinely changes (files added/removed under data/raw/), the
+    fingerprint changes too and the cache is recomputed and overwritten.
+    Pass cache_path=None to always recompute (e.g. in tests).
     """
+    cache_file = Path(cache_path) if cache_path else None
+    cache_key = {
+        "holdout_generator": holdout_generator,
+        "train_split": train_split,
+        "val_split": val_split,
+        "seed": seed,
+        "samples_fingerprint": _samples_fingerprint(samples),
+    }
+
+    if cache_file and cache_file.exists():
+        try:
+            cached = json.loads(cache_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            cached = None
+        if cached and cached.get("key") == cache_key:
+            path_to_sample = {s.path: s for s in samples}
+            return {
+                split_name: [path_to_sample[p] for p in paths if p in path_to_sample]
+                for split_name, paths in cached["splits"].items()
+            }
+
     rng = random.Random(seed)
 
     holdout = [s for s in samples if s.generator == holdout_generator]
@@ -79,12 +130,24 @@ def split_samples(
     n_train = int(n * train_split)
     n_val = int(n * val_split)
 
-    return {
+    result = {
         "train": trainable_pool[:n_train],
         "val": trainable_pool[n_train:n_train + n_val],
         "test": trainable_pool[n_train + n_val:],
         "unseen_generator": holdout,
     }
+
+    if cache_file:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(
+            json.dumps({
+                "key": cache_key,
+                "splits": {name: [s.path for s in split] for name, split in result.items()},
+            }, indent=2),
+            encoding="utf-8",
+        )
+
+    return result
 
 
 class AIGCDataset(Dataset):
