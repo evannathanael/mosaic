@@ -26,6 +26,13 @@ create table if not exists public.posts (
     is_seed boolean not null default false
 );
 
+-- Safe upgrades for projects created with an earlier version of this schema.
+-- These are intentionally idempotent and can be run more than once.
+alter table public.posts add column if not exists similarity_score double precision not null default 0;
+alter table public.posts add column if not exists embedding jsonb;
+alter table public.posts add column if not exists image_storage_key text;
+alter table public.posts add column if not exists thumbnail_storage_key text;
+
 create index if not exists posts_created_at_idx on public.posts (created_at desc);
 create index if not exists posts_cluster_idx on public.posts (similarity_cluster);
 create index if not exists posts_hash_idx on public.posts (image_sha256);
