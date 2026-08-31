@@ -116,7 +116,9 @@ evaluation:
 detector:
   # Live ViT-L/14 inference is opt-in because it can exceed a laptop's virtual
   # memory (Windows error 1455). Enable after configuring sufficient RAM/pagefile.
-  enabled: false
+  # Enabled here — verified fine on this machine; the model was already
+  # loaded repeatedly in-process during development without RAM issues.
+  enabled: true
   checkpoint: "combined_head.pt"
   threshold: 0.5
   # Re-score the committed demo seed posts with the model at startup. Turn off to
