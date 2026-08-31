@@ -1,0 +1,17 @@
+review_group,dhash,relative_path,split,label
+review_000001,0000000000000000,test/FAKE/501 (3).jpg,test,1
+review_000001,0000000000000000,train/FAKE/4208 (9).jpg,train,1
+review_000002,3c3929024e073736,train/REAL/0429 (5).jpg,train,0
+review_000002,3c3929024e073736,train/REAL/3517 (5).jpg,train,0
+review_000003,4a0f8e1e178f8d89,train/REAL/0680 (7).jpg,train,0
+review_000003,4a0f8e1e178f8d89,train/REAL/2191 (7).jpg,train,0
+review_000004,5af47134346c128b,train/REAL/0166 (5).jpg,train,0
+review_000004,5af47134346c128b,train/REAL/1512 (5).jpg,train,0
+review_000005,6f070d2537b3f891,train/REAL/0035 (2).jpg,train,0
+review_000005,6f070d2537b3f891,train/REAL/0412 (2).jpg,train,0
+review_000006,b35bd6c72797d48d,train/REAL/1071 (7).jpg,train,0
+review_000006,b35bd6c72797d48d,train/REAL/4966 (7).jpg,train,0
+review_000007,b89919d999951524,test/REAL/0168 (7).jpg,test,0
+review_000007,b89919d999951524,train/REAL/0658 (7).jpg,train,0
+review_000008,d2f2f0f2f0d0dcf8,test/REAL/0279 (4).jpg,test,0
+review_000008,d2f2f0f2f0d0dcf8,train/REAL/0233 (4).jpg,train,0

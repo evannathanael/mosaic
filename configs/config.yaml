@@ -1,7 +1,7 @@
 # Mosaic — central config
 # Change settings here rather than in code, so every run is reproducible.
 
-seed: 42
+seed: 123
 
 data:
   raw_dir: "data/raw"
@@ -40,11 +40,11 @@ train_only_augmentation:
   extra_color_jitter: true
 
 model:
-  backbone: "ViT-B-32"          # open_clip model name
+  backbone: "ViT-L-14"          # open_clip model name — matches Chelsea's similarity backbone
   pretrained: "openai"          # pretrained weight tag
   freeze_backbone: true         # set false to fine-tune the backbone too
-  embedding_dim: 512            # must match the chosen backbone's output dim
-  classifier_hidden_dim: 128
+  embedding_dim: 768            # must match the chosen backbone's output dim
+  classifier_hidden_dim: 256
   dropout: 0.2
 
 training:
@@ -80,6 +80,17 @@ similarity:
 
 evaluation:
   primary_metric: "auc"
+  # Caps each data source (cifake/sid_set/wildfake) to at most this many
+  # samples (stratified by label) before combining them in
+  # scan_all_sources() — WildFake's manifest alone can have 200K+ rows,
+  # which is heavy to decode from ZIP archives on a memory-constrained Colab
+  # instance. Set to null to disable capping.
+  max_samples_per_source: 3000
+  # Eval-only batch size, separate from training.batch_size (Glory's config
+  # for train.py/train_clip_head.py) — kept small deliberately since eval
+  # runs on Colab's free-tier RAM, which has been OOM-killing DataLoader
+  # workers at the larger training batch size.
+  batch_size: 16
   robustness_conditions:
     - clean
     - jpeg_q30
