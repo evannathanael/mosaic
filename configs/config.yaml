@@ -43,6 +43,8 @@ model:
   backbone: "ViT-L-14" # open_clip model name — matches Chelsea's similarity backbone
   pretrained: "openai" # pretrained weight tag
   freeze_backbone: true # set false to fine-tune the backbone too
+  unfreeze_last_n_blocks: 2 # only used when freeze_backbone: false — 0 means fine-tune the whole backbone;
+                            # >0 keeps everything but the last N transformer blocks (+ ln_post/proj) frozen
   embedding_dim: 768 # must match the chosen backbone's output dim
   classifier_hidden_dim: 256
   dropout: 0.2
@@ -51,10 +53,13 @@ training:
   batch_size: 64
   epochs: 15
   learning_rate: 0.0003
+  backbone_learning_rate: 0.00001  # used only for unfrozen backbone params (finetune_backbone) — much
+                                    # smaller than the head's LR so pretrained CLIP weights don't blow up
   weight_decay: 0.0001
   optimizer: "adamw"
   scheduler: "cosine"
-  early_stopping_patience: 3
+  early_stopping_patience: 6 # bumped from 3 — val AUC on a small head was plausibly getting cut off
+                             # by noise before convergence, not a real plateau
   device: "cuda" # falls back to cpu automatically if unavailable
 
 # Named training-run variants for Person B's parallel experiments.
@@ -71,6 +76,7 @@ experiments:
   finetune_backbone:
     model:
       freeze_backbone: false
+      unfreeze_last_n_blocks: 2
 
 similarity:
   # Live CLIP upload embeddings are opt-in. Keep false on memory-constrained
@@ -110,7 +116,9 @@ evaluation:
 detector:
   # Live ViT-L/14 inference is opt-in because it can exceed a laptop's virtual
   # memory (Windows error 1455). Enable after configuring sufficient RAM/pagefile.
-  enabled: false
+  # Enabled here — verified fine on this machine; the model was already
+  # loaded repeatedly in-process during development without RAM issues.
+  enabled: true
   checkpoint: "combined_head.pt"
   threshold: 0.5
   # Re-score the committed demo seed posts with the model at startup. Turn off to
