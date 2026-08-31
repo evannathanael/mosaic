@@ -50,6 +50,16 @@ def set_seed(seed: int = 42):
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
+        # cuDNN picks convolution algorithms based on runtime heuristics/
+        # autotuning by default, which is NOT guaranteed reproducible run to
+        # run on GPU even with every RNG above seeded — this was a real,
+        # verified source of two identical-code training runs producing
+        # different models. deterministic=True forces reproducible kernels;
+        # benchmark must be False alongside it (benchmark's autotuning is
+        # itself a source of the same nondeterminism). Trade-off: this can be
+        # somewhat slower than the default autotuned/benchmarked path.
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
     except ImportError:
         pass
 
